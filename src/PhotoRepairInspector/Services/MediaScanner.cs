@@ -54,11 +54,6 @@ public sealed class MediaScanner
             items.Add(item);
         }
 
-        if (config.AutoGroupByParsedDate)
-        {
-            AnalyzeGroups(items, config);
-        }
-
         return items;
     }
 
@@ -81,65 +76,9 @@ public sealed class MediaScanner
             item.ActionReason = $"File dates near {config.ProblemDate:dd.MM.yyyy}; filename suggests {item.ParsedDate:dd.MM.yyyy}";
         }
 
-        if (item.IsImage)
+        if (item.IsImage && item.ExifDate == null && item.ParsedDate != null)
         {
-            if (item.ExifDate == null && item.ParsedDate != null)
-            {
-                item.Notes = AppendNote(item.Notes, "EXIF missing");
-                if (item.ProposedAction == MediaActionType.NoChange)
-                {
-                    item.ProposedAction = MediaActionType.WriteExifFromFilename;
-                    item.ActionReason ??= "Missing EXIF date";
-                }
-            }
-            else if (item.ExifDate != null && item.ParsedDate != null && item.ExifDate.Value != item.ParsedDate.Value)
-            {
-                item.Notes = AppendNote(item.Notes, "EXIF date differs");
-            }
-        }
-
-        if (item.Source == MediaSource.WhatsApp)
-        {
-            item.Notes = AppendNote(item.Notes, "WhatsApp copy (likely compressed)");
-        }
-    }
-
-    private static void AnalyzeGroups(List<MediaFileInfo> items, AppConfig config)
-    {
-        var groups = items
-            .Where(x => x.ParsedDate != null)
-            .GroupBy(x => x.GroupKey)
-            .Where(g => !string.IsNullOrEmpty(g.Key));
-
-        foreach (var group in groups)
-        {
-            var ordered = group.OrderByDescending(x => x.Size).ToList();
-            var primary = ordered.FirstOrDefault();
-            if (primary == null)
-            {
-                continue;
-            }
-
-            primary.IsGroupPrimary = true;
-            var threshold = primary.Size * config.MinCompressedSizeRatio;
-            foreach (var item in ordered.Skip(1))
-            {
-                if (item.Size < threshold)
-                {
-                    item.IsCompressedVariant = true;
-                    item.Notes = AppendNote(item.Notes, "Smaller/Compressed copy");
-                    if (item.ProposedAction == MediaActionType.NoChange)
-                    {
-                        item.ProposedAction = MediaActionType.DeleteSmallerCompressedCopy;
-                        item.ActionReason = "Detected smaller copy in group";
-                    }
-                }
-            }
-
-            foreach (var item in ordered)
-            {
-                item.Duplicates = ordered;
-            }
+            item.Notes = AppendNote(item.Notes, "EXIF missing");
         }
     }
 

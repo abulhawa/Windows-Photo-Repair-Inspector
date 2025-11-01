@@ -10,8 +10,8 @@ public class MediaFileInfo
     public required string FileName { get; init; }
     public required string DirectoryName { get; init; }
     public required long Size { get; init; }
-    public required DateTime Created { get; init; }
-    public required DateTime Modified { get; init; }
+    public required DateTime Created { get; set; }
+    public required DateTime Modified { get; set; }
     public DateTime? ParsedDate { get; set; }
     public DateTime? ExifDate { get; set; }
     public bool IsImage { get; init; }

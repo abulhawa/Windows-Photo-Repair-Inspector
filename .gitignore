@@ -1,0 +1,19 @@
+################################################################################
+# Visual Studio / .NET build artifacts
+################################################################################
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+
+# Logs
+*.log
+

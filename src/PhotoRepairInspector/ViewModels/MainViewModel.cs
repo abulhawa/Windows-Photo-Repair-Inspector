@@ -5,7 +5,9 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Windows.Data;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
 using System.Windows.Input;
 using PhotoRepairInspector.Models;
 using PhotoRepairInspector.Services;
@@ -16,281 +18,228 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly MediaScanner _scanner = new();
     private readonly ObservableCollection<MediaFileViewModel> _items = new();
-    private readonly ObservableCollection<MediaGroupInfo> _suspiciousGroups = new();
     private readonly StringBuilder _logBuilder = new();
     private readonly RelayCommand _scanFolderCommand;
-    private readonly RelayCommand _applySelectedCommand;
-    private readonly RelayCommand _applySingleCommand;
-    private readonly RelayCommand _ignoreSingleCommand;
+    private readonly RelayCommand _applyFixesCommand;
+
     private ActionLogger? _logger;
     private MediaActionService? _actionService;
     private string? _currentRoot;
-    private bool _showOnlyWithChanges;
-    private MediaFileViewModel? _selectedItem;
-    private MediaGroupInfo? _selectedGroup;
-    private int _selectedTabIndex;
+    private bool _isScanning;
+    private int _totalItems;
+    private int _pendingFixCount;
 
     public MainViewModel()
     {
         Configuration = new AppConfig();
-        ActionChoices = new List<ActionChoice>
-        {
-            new(MediaActionType.NoChange, "No change"),
-            new(MediaActionType.FixDateFromFilename, "Fix date from filename"),
-            new(MediaActionType.DeleteSmallerCompressedCopy, "Delete smaller compressed copy"),
-            new(MediaActionType.WriteExifFromFilename, "Keep but write EXIF date"),
-            new(MediaActionType.MarkSuspicious, "Mark as suspicious (missing original)")
-        };
-
-        FilteredItems = CollectionViewSource.GetDefaultView(_items);
-        FilteredItems.Filter = FilterItems;
-
-        SuspiciousGroups = new ReadOnlyObservableCollection<MediaGroupInfo>(_suspiciousGroups);
-
-        _scanFolderCommand = new RelayCommand(_ => ScanFolder());
-        _applySelectedCommand = new RelayCommand(_ => ApplySelectedChanges(), _ => _items.Any(i => i.SelectedActionType != MediaActionType.NoChange));
-        _applySingleCommand = new RelayCommand(item => ApplySingle(item as MediaFileViewModel), item => item is MediaFileViewModel vm && vm.SelectedActionType != MediaActionType.NoChange);
-        _ignoreSingleCommand = new RelayCommand(item => (item as MediaFileViewModel)?.ResetSelection());
+        _scanFolderCommand = new RelayCommand(_ => ScanFolder(), _ => !IsScanning);
+        _applyFixesCommand = new RelayCommand(_ => ApplyFixes(), _ => PendingFixCount > 0 && !IsScanning);
 
         ScanFolderCommand = _scanFolderCommand;
-        ApplySelectedCommand = _applySelectedCommand;
-        ApplySingleCommand = _applySingleCommand;
-        IgnoreSingleCommand = _ignoreSingleCommand;
+        ApplyFixesCommand = _applyFixesCommand;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public AppConfig Configuration { get; }
 
-    public ICollectionView FilteredItems { get; }
-
-    public IReadOnlyList<ActionChoice> ActionChoices { get; }
-
-    public ReadOnlyObservableCollection<MediaGroupInfo> SuspiciousGroups { get; }
-
     public IEnumerable<MediaFileViewModel> Items => _items;
 
     public ICommand ScanFolderCommand { get; }
-    public ICommand ApplySelectedCommand { get; }
-    public ICommand ApplySingleCommand { get; }
-    public ICommand IgnoreSingleCommand { get; }
+    public ICommand ApplyFixesCommand { get; }
 
-    public bool ShowOnlyWithChanges
+    public bool IsScanning
     {
-        get => _showOnlyWithChanges;
-        set
+        get => _isScanning;
+        private set
         {
-            if (_showOnlyWithChanges != value)
+            if (_isScanning != value)
             {
-                _showOnlyWithChanges = value;
-                FilteredItems.Refresh();
-                OnPropertyChanged(nameof(ShowOnlyWithChanges));
-            }
-        }
-    }
-
-    public MediaFileViewModel? SelectedItem
-    {
-        get => _selectedItem;
-        set
-        {
-            if (_selectedItem != value)
-            {
-                _selectedItem = value;
-                OnPropertyChanged(nameof(SelectedItem));
-                _applySingleCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
-
-    public MediaGroupInfo? SelectedGroup
-    {
-        get => _selectedGroup;
-        set
-        {
-            if (_selectedGroup != value)
-            {
-                _selectedGroup = value;
-                OnPropertyChanged(nameof(SelectedGroup));
-                if (_selectedGroup != null)
-                {
-                    var first = _items.FirstOrDefault(i => i.GroupKey == _selectedGroup.GroupKey);
-                    if (first != null)
-                    {
-                        SelectedItem = first;
-                    }
-                }
+                _isScanning = value;
+                OnPropertyChanged(nameof(IsScanning));
+                _scanFolderCommand.RaiseCanExecuteChanged();
+                _applyFixesCommand.RaiseCanExecuteChanged();
             }
         }
     }
 
     public string LogText => _logBuilder.ToString();
 
-    public int SelectedTabIndex
+    public int TotalItems
     {
-        get => _selectedTabIndex;
-        set
+        get => _totalItems;
+        private set
         {
-            if (_selectedTabIndex != value)
+            if (_totalItems != value)
             {
-                _selectedTabIndex = value;
-                OnPropertyChanged(nameof(SelectedTabIndex));
+                _totalItems = value;
+                OnPropertyChanged(nameof(TotalItems));
             }
         }
     }
 
-    private void ScanFolder()
+    public int PendingFixCount
     {
-        using var dialog = new System.Windows.Forms.FolderBrowserDialog
+        get => _pendingFixCount;
+        private set
+        {
+            if (_pendingFixCount != value)
+            {
+                _pendingFixCount = value;
+                OnPropertyChanged(nameof(PendingFixCount));
+                _applyFixesCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    private async void ScanFolder()
+    {
+        if (IsScanning)
+        {
+            return;
+        }
+
+        using var dialog = new FolderBrowserDialog
         {
             Description = "Select the root folder to scan"
         };
 
-        if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+        if (dialog.ShowDialog() != DialogResult.OK)
         {
             return;
         }
 
         _currentRoot = dialog.SelectedPath;
         _logger?.Dispose();
-        var logPath = Path.Combine(_currentRoot, $"{Configuration.LogFileNamePrefix}-{DateTime.Now:yyyyMMddHHmmss}.txt");
-        _logger = new ActionLogger(logPath);
-        _actionService = new MediaActionService(Configuration, _logger, _currentRoot);
 
-        AppendLog($"Scanning {_currentRoot}...");
-        var mediaItems = _scanner.Scan(_currentRoot, Configuration, progress => AppendLog($"Found {progress}"));
+        IReadOnlyList<MediaFileInfo> mediaItems = Array.Empty<MediaFileInfo>();
+        var progressCount = 0;
 
-        foreach (var existing in _items.ToList())
+        try
         {
-            existing.PropertyChanged -= OnItemPropertyChanged;
+            IsScanning = true;
+
+            var logPath = Path.Combine(_currentRoot, $"{Configuration.LogFileNamePrefix}-{DateTime.Now:yyyyMMddHHmmss}.txt");
+            _logger = new ActionLogger(logPath);
+            _actionService = new MediaActionService(Configuration, _logger, _currentRoot);
+
+            _logBuilder.Clear();
+            AppendLog($"Scanning {_currentRoot}...");
+
+            mediaItems = await Task.Run(() =>
+                _scanner.Scan(_currentRoot, Configuration, progress =>
+                {
+                    var current = Interlocked.Increment(ref progressCount);
+                    ReportProgress(current, progress);
+                }));
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Scan failed: {ex.Message}");
+            return;
+        }
+        finally
+        {
+            IsScanning = false;
+        }
+
+        foreach (var item in _items.ToList())
+        {
+            item.PropertyChanged -= OnItemPropertyChanged;
         }
 
         _items.Clear();
-        foreach (var info in mediaItems)
+
+        var fixable = mediaItems
+            .Where(i => i.ProposedAction == MediaActionType.FixDateFromFilename)
+            .OrderBy(i => i.ParsedDate ?? DateTime.MaxValue)
+            .ThenBy(i => i.FileName)
+            .ToList();
+
+        foreach (var info in fixable)
         {
             var vm = new MediaFileViewModel(info);
             vm.PropertyChanged += OnItemPropertyChanged;
             _items.Add(vm);
         }
 
-        BuildSuspiciousGroups(mediaItems);
-        FilteredItems.Refresh();
-        AppendLog($"Scan complete: {mediaItems.Count} items");
-        _applySelectedCommand.RaiseCanExecuteChanged();
-        _applySingleCommand.RaiseCanExecuteChanged();
+        UpdateCounts();
+
+        AppendLog($"Scan complete: {mediaItems.Count} files scanned, {fixable.Count} need date fixes.");
     }
 
-    private void BuildSuspiciousGroups(IReadOnlyList<MediaFileInfo> items)
+    private void ApplyFixes()
     {
-        _suspiciousGroups.Clear();
-        var groups = items
-            .Where(i => !string.IsNullOrEmpty(i.GroupKey))
-            .GroupBy(i => i.GroupKey)
-            .Select(g => new MediaGroupInfo
+        if (_actionService == null || PendingFixCount == 0)
+        {
+            return;
+        }
+
+        var itemsToFix = _items.Where(i => i.HasPendingChanges).ToList();
+        AppendLog($"Applying date fixes to {itemsToFix.Count} files...");
+
+        foreach (var item in itemsToFix)
+        {
+            try
             {
-                GroupKey = g.Key,
-                Items = g.ToList()
-            })
-            .Where(g => g.OnlyCompressed || g.AllWhatsApp);
-
-        foreach (var group in groups)
-        {
-            _suspiciousGroups.Add(group);
-        }
-
-        OnPropertyChanged(nameof(SuspiciousGroups));
-    }
-
-    private void ApplySelectedChanges()
-    {
-        if (_actionService == null)
-        {
-            return;
-        }
-
-        foreach (var item in _items.Where(i => i.SelectedActionType != MediaActionType.NoChange).ToList())
-        {
-            ApplyAndRefresh(item);
-        }
-
-        AppendLog("Apply completed");
-        FilteredItems.Refresh();
-    }
-
-    private void ApplySingle(MediaFileViewModel? item)
-    {
-        if (item == null || _actionService == null)
-        {
-            return;
-        }
-
-        ApplyAndRefresh(item);
-        AppendLog($"Applied action for {item.FileName}");
-        FilteredItems.Refresh();
-    }
-
-    private void ApplyAndRefresh(MediaFileViewModel item)
-    {
-        if (_actionService == null)
-        {
-            return;
-        }
-
-        try
-        {
-            item.ApplySelection();
-            _actionService.Apply(item.Info);
-            item.RefreshFromFileSystem();
-            item.MarkApplied();
-            item.ResetSelection();
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"Error applying action to {item.FileName}: {ex.Message}");
-        }
-        finally
-        {
-            _applySelectedCommand.RaiseCanExecuteChanged();
-            _applySingleCommand.RaiseCanExecuteChanged();
-            if (ShowOnlyWithChanges)
+                item.PrepareForApply();
+                _actionService.Apply(item.Info);
+                item.RefreshFromFileSystem();
+                item.MarkApplied();
+            }
+            catch (Exception ex)
             {
-                FilteredItems.Refresh();
+                AppendLog($"Error fixing {item.FileName}: {ex.Message}");
             }
         }
+
+        UpdateCounts();
+        AppendLog("Date fix run complete.");
     }
 
-    private bool FilterItems(object obj)
+    private void UpdateCounts()
     {
-        if (obj is not MediaFileViewModel item)
-        {
-            return false;
-        }
+        TotalItems = _items.Count;
+        PendingFixCount = _items.Count(i => i.HasPendingChanges);
+        OnPropertyChanged(nameof(Items));
+    }
 
-        if (!ShowOnlyWithChanges)
+    private void ReportProgress(int count, string filePath)
+    {
+        if (count == 1 || count % 50 == 0)
         {
-            return true;
+            var name = Path.GetFileName(filePath);
+            var message = string.IsNullOrEmpty(name)
+                ? $"Scanning... {count} files processed"
+                : $"Scanning... {count} files processed (last: {name})";
+            AppendLog(message);
         }
-
-        return item.SelectedActionType != MediaActionType.NoChange || item.SuggestedActionType != MediaActionType.NoChange;
     }
 
     private void AppendLog(string message)
     {
-        _logBuilder.AppendLine(message);
-        OnPropertyChanged(nameof(LogText));
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher == null || dispatcher.CheckAccess())
+        {
+            _logBuilder.AppendLine(message);
+            OnPropertyChanged(nameof(LogText));
+        }
+        else
+        {
+            dispatcher.Invoke(() =>
+            {
+                _logBuilder.AppendLine(message);
+                OnPropertyChanged(nameof(LogText));
+            });
+        }
     }
 
     private void OnItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(MediaFileViewModel.SelectedActionType) ||
-            e.PropertyName == nameof(MediaFileViewModel.SuggestedActionType))
+        if (e.PropertyName == nameof(MediaFileViewModel.IsSelected) ||
+            e.PropertyName == nameof(MediaFileViewModel.HasPendingChanges))
         {
-            _applySelectedCommand.RaiseCanExecuteChanged();
-            _applySingleCommand.RaiseCanExecuteChanged();
-            if (ShowOnlyWithChanges)
-            {
-                FilteredItems.Refresh();
-            }
+            UpdateCounts();
         }
     }
 
@@ -301,6 +250,4 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnPropertyChanged(string propertyName)
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-
-    public readonly record struct ActionChoice(MediaActionType Action, string Description);
 }

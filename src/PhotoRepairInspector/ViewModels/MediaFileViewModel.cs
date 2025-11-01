@@ -1,29 +1,20 @@
 using System;
 using System.ComponentModel;
 using System.IO;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Windows.Media.Imaging;
 using PhotoRepairInspector.Models;
-using PhotoRepairInspector.Utilities;
 
 namespace PhotoRepairInspector.ViewModels;
 
 public class MediaFileViewModel : INotifyPropertyChanged
 {
     private readonly MediaFileInfo _info;
-    private BitmapImage? _thumbnail;
-    private BitmapImage? _previewImage;
-    private MediaActionType _selectedActionType;
-    private MediaActionType _suggestedActionType;
+    private bool _isSelected;
 
     public MediaFileViewModel(MediaFileInfo info)
     {
         _info = info;
-        _suggestedActionType = info.ProposedAction;
-        _selectedActionType = info.ProposedAction == MediaActionType.DeleteSmallerCompressedCopy
-            ? MediaActionType.NoChange
-            : info.ProposedAction;
+        _isSelected = info.ProposedAction == MediaActionType.FixDateFromFilename;
     }
 
     public MediaFileInfo Info => _info;
@@ -33,57 +24,34 @@ public class MediaFileViewModel : INotifyPropertyChanged
     public string FileName => _info.FileName;
     public string DirectoryName => _info.DirectoryName;
     public string FullPath => _info.FilePath;
-    public string ParsedDateDisplay => _info.ParsedDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
+    public string ParsedDateDisplay => _info.ParsedDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "n/a";
     public string CreatedDisplay => _info.Created.ToString("yyyy-MM-dd HH:mm:ss");
     public string ModifiedDisplay => _info.Modified.ToString("yyyy-MM-dd HH:mm:ss");
-    public string ProposedDateDisplay => _info.ParsedDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
-    public string SizeDisplay => _info.SizeDisplay;
-    public string Source => _info.Source.ToString();
-    public string GroupKey => _info.GroupKey;
+    public string ProposedDateDisplay => _info.ParsedDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "n/a";
+    public string Reason => _info.ActionReason ?? string.Empty;
     public string Notes => _info.Notes ?? string.Empty;
-    public bool IsImage => _info.IsImage;
-    public bool IsVideo => _info.IsVideo;
-    public string? Resolution => _info.Resolution;
-    public string ActionReason => _info.ActionReason ?? string.Empty;
-    public string PlannedAction => DescribeAction(SelectedActionType);
-    public string ExifStatus => _info.ExifDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "not present";
-    public string DuplicateSummary => BuildDuplicateSummary();
-    public bool HasPendingChanges => SelectedActionType != MediaActionType.NoChange;
-    public MediaActionType SuggestedActionType
-    {
-        get => _suggestedActionType;
-        private set
-        {
-            if (_suggestedActionType != value)
-            {
-                _suggestedActionType = value;
-                OnPropertyChanged(nameof(SuggestedActionType));
-            }
-        }
-    }
 
-    public MediaActionType SelectedActionType
+    public bool CanFix => _info.ProposedAction == MediaActionType.FixDateFromFilename;
+
+    public bool IsSelected
     {
-        get => _selectedActionType;
+        get => _isSelected;
         set
         {
-            if (_selectedActionType != value)
+            if (_isSelected != value)
             {
-                _selectedActionType = value;
+                _isSelected = value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(HasPendingChanges));
-                OnPropertyChanged(nameof(PlannedAction));
             }
         }
     }
 
-    public BitmapImage? Thumbnail => _thumbnail ??= _info.IsImage ? ImagePreviewLoader.LoadThumbnail(_info.FilePath, 96) : null;
+    public bool HasPendingChanges => CanFix && IsSelected;
 
-    public BitmapImage? PreviewImage => _previewImage ??= _info.IsImage ? ImagePreviewLoader.LoadThumbnail(_info.FilePath, 640) : null;
-
-    public void ApplySelection()
+    public void PrepareForApply()
     {
-        _info.ProposedAction = SelectedActionType;
+        _info.ProposedAction = HasPendingChanges ? MediaActionType.FixDateFromFilename : MediaActionType.NoChange;
     }
 
     public void RefreshFromFileSystem()
@@ -100,42 +68,13 @@ public class MediaFileViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ModifiedDisplay));
     }
 
-    public void ResetSelection()
-    {
-        SelectedActionType = MediaActionType.NoChange;
-    }
-
     public void MarkApplied()
     {
-        SuggestedActionType = MediaActionType.NoChange;
+        _isSelected = false;
         _info.ProposedAction = MediaActionType.NoChange;
-        OnPropertyChanged(nameof(PlannedAction));
-        OnPropertyChanged(nameof(Notes));
+        OnPropertyChanged(nameof(IsSelected));
+        OnPropertyChanged(nameof(HasPendingChanges));
     }
-
-    private string BuildDuplicateSummary()
-    {
-        if (_info.Duplicates == null || _info.Duplicates.Count <= 1)
-        {
-            return "No duplicates detected";
-        }
-
-        var parts = _info.Duplicates
-            .OrderByDescending(x => x.Size)
-            .Select(x => $"{x.FileName} ({FileSizeFormatter.ToDisplay(x.Size)})");
-        return "Duplicates in group: " + string.Join(", ", parts);
-    }
-
-    private static string DescribeAction(MediaActionType action)
-        => action switch
-        {
-            MediaActionType.NoChange => "No change",
-            MediaActionType.FixDateFromFilename => "Fix date from filename",
-            MediaActionType.DeleteSmallerCompressedCopy => "Delete smaller compressed copy",
-            MediaActionType.WriteExifFromFilename => "Keep but write EXIF date",
-            MediaActionType.MarkSuspicious => "Mark as suspicious (missing original)",
-            _ => "No change"
-        };
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
