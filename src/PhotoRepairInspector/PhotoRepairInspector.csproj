@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableDefaultItems>false</EnableDefaultItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="App.xaml.cs" />
+    <Compile Include="MainWindow.xaml.cs" />
+    <Compile Include="ViewModels\MainViewModel.cs" />
+    <Compile Include="ViewModels\MediaFileViewModel.cs" />
+    <Compile Include="ViewModels\RelayCommand.cs" />
+    <Compile Include="Models\AppConfig.cs" />
+    <Compile Include="Models\MediaActionType.cs" />
+    <Compile Include="Models\MediaFileInfo.cs" />
+    <Compile Include="Models\MediaGroupInfo.cs" />
+    <Compile Include="Models\MediaSource.cs" />
+    <Compile Include="Services\ActionLogger.cs" />
+    <Compile Include="Services\MediaActionService.cs" />
+    <Compile Include="Services\MediaScanner.cs" />
+    <Compile Include="Utilities\DateParsingService.cs" />
+    <Compile Include="Utilities\FileSizeFormatter.cs" />
+    <Compile Include="Utilities\ImagePreviewLoader.cs" />
+    <Compile Include="Utilities\MetadataService.cs" />
+    <Page Include="App.xaml" />
+    <Page Include="MainWindow.xaml" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="app.manifest" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MetadataExtractor" Version="2.8.1" />
+  </ItemGroup>
+</Project>
