@@ -1,19 +1,38 @@
 ################################################################################
-# Visual Studio / .NET build artifacts
+# Python project artifacts
 ################################################################################
 
-# IDE
-.vs/
+# Bytecode + cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Testing
+.pytest_cache/
+.tox/
+.coverage
+coverage.xml
+
+# Editors
 .vscode/
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
+.idea/
 
-# Build outputs
-bin/
-obj/
-
-# Logs
-*.log
+# OS
+.DS_Store
+Thumbs.db
 
