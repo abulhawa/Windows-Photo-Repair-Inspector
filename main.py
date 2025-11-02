@@ -480,6 +480,8 @@ class PhotoMetadataViewer:
                     ("Set Modified = Taken At", set_from("modified", "taken")),
                     ("Set Created = Filename", set_from("created", "filename")),
                     ("Set Modified = Filename", set_from("modified", "filename")),
+                    ("Set Taken = Created", set_from("taken", "created")),
+                    ("Set Taken = Modified", set_from("taken", "modified")),
                 ],
             ),
             (
@@ -492,6 +494,9 @@ class PhotoMetadataViewer:
                     ("Set Created = Taken At", set_from("created", "taken")),
                     ("Set Modified = Filename", set_from("modified", "filename")),
                     ("Set Created = Filename", set_from("created", "filename")),
+                    ("Set Taken = Created", set_from("taken", "created")),
+                    ("Set Taken = Modified", set_from("taken", "modified")),
+                    ("Set Taken = Filename", set_from("taken", "filename")),
                 ],
             ),
             (
