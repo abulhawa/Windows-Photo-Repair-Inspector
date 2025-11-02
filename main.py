@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import subprocess
 import sys
 import threading
+from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Callable, Iterable, Literal, Optional
 
 if not sys.platform.startswith("win"):
     raise SystemExit("This application currently runs on Windows only.")
@@ -21,8 +23,78 @@ import piexif
 from PIL import Image
 from PIL.ExifTags import TAGS
 
-_PIEXIF_AVAILABLE = True
-_PIL_AVAILABLE = True
+# Windows file time helpers
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+FILE_SHARE_DELETE = 0x00000004
+OPEN_EXISTING = 0x00000003
+FILE_ATTRIBUTE_NORMAL = 0x00000080
+FILE_WRITE_ATTRIBUTES = 0x00000100
+GENERIC_WRITE = 0x40000000
+EPOCH_AS_FILETIME = 11644473600 * 10 ** 7  # seconds to 100-ns intervals offset
+HUNDREDS_OF_NANOSECONDS = 10 ** 7
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+class FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+
+kernel32.CreateFileW.argtypes = (
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.HANDLE,
+)
+kernel32.CreateFileW.restype = wintypes.HANDLE
+kernel32.SetFileTime.argtypes = (
+    wintypes.HANDLE,
+    ctypes.POINTER(FILETIME),
+    ctypes.POINTER(FILETIME),
+    ctypes.POINTER(FILETIME),
+)
+kernel32.SetFileTime.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+kernel32.CloseHandle.restype = wintypes.BOOL
+
+INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+
+def _timestamp_to_filetime(timestamp: float) -> FILETIME:
+    intervals = int(timestamp * HUNDREDS_OF_NANOSECONDS + EPOCH_AS_FILETIME)
+    return FILETIME(intervals & 0xFFFFFFFF, intervals >> 32)
+
+
+def _set_windows_file_times(path: Path, created_ts: float, accessed_ts: float, modified_ts: float) -> None:
+    handle = kernel32.CreateFileW(
+        str(path),
+        FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    try:
+        creation_ft = _timestamp_to_filetime(created_ts)
+        access_ft = _timestamp_to_filetime(accessed_ts)
+        modified_ft = _timestamp_to_filetime(modified_ts)
+        if not kernel32.SetFileTime(
+            handle,
+            ctypes.byref(creation_ft),
+            ctypes.byref(access_ft),
+            ctypes.byref(modified_ft),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 IMAGE_EXTENSIONS = {
@@ -52,6 +124,7 @@ VIDEO_EXTENSIONS = {
 
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 WRITABLE_TAKEN_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff"}
+AnchorLiteral = Literal["nw", "n", "ne", "w", "center", "e", "sw", "s", "se"]
 
 
 def format_size(num_bytes: int) -> str:
@@ -85,9 +158,6 @@ def iter_media_files(root: Path) -> Iterable[Path]:
 
 def get_exif_taken_date(path: Path) -> Optional[str]:
     """Extract the 'taken at' timestamp from EXIF data if available."""
-    if not _PIL_AVAILABLE or Image is None:
-        return None
-
     try:
         with Image.open(path) as img:
             exif_data = img._getexif()  # type: ignore[attr-defined]
@@ -155,6 +225,17 @@ def derive_proposed_taken(created: str, filename_date: str, taken: str) -> Optio
     return created
 
 
+def parse_timestamp(value: str) -> Optional[float]:
+    """Parse a YYYY-MM-DD HH:MM:SS string into a Unix timestamp."""
+    if not value:
+        return None
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return dt.timestamp()
+
+
 @dataclass
 class MediaRecord:
     name: str
@@ -165,6 +246,9 @@ class MediaRecord:
     filename_date: str
     path: str
     media_type: str
+    created_ts: float
+    modified_ts: float
+    taken_ts: Optional[float]
     proposed_taken: Optional[str] = None
 
 
@@ -175,7 +259,7 @@ def open_file(path: Path) -> None:
 
 def reveal_in_explorer(path: Path) -> None:
     """Open the folder containing the file."""
-    subprocess.run(["explorer", f"/select,{path.resolve()}"], check=True)
+    subprocess.Popen(["explorer", "/select,", str(path.resolve())])
 
 
 class PhotoMetadataViewer:
@@ -191,6 +275,7 @@ class PhotoMetadataViewer:
         self.fix_columns: tuple[str, ...] = ()
         self.browser_tab: Optional[ttk.Frame] = None
         self.fix_tab: Optional[ttk.Frame] = None
+        self.anomaly_views: dict[str, dict[str, Any]] = {}
         self._context_tree: Optional[ttk.Treeview] = None
         self._context_map: Optional[dict[str, MediaRecord]] = None
         self._build_ui()
@@ -255,16 +340,7 @@ class PhotoMetadataViewer:
 
         columns = ("name", "size", "created", "modified", "taken", "filename_date", "path")
         self.columns = columns
-        self.tree = ttk.Treeview(
-            browser_frame,
-            columns=columns,
-            show="headings",
-            height=16,
-        )
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        self.tree.bind("<Button-3>", self._on_right_click)
-
-        headings = {
+        self.headings = {
             "name": "File",
             "size": "Size",
             "created": "Created At",
@@ -273,21 +349,24 @@ class PhotoMetadataViewer:
             "filename_date": "Filename Date",
             "path": "Location",
         }
-
-        for column, heading in headings.items():
-            self.tree.heading(
-                column,
-                text=heading,
-                command=lambda col=column: self._sort_by_column(self.tree, self.item_to_record, col, False),
-            )
-
-        self.tree.column("name", width=200, anchor="w")
-        self.tree.column("size", width=100, anchor="e")
-        self.tree.column("created", width=140, anchor="center")
-        self.tree.column("modified", width=140, anchor="center")
-        self.tree.column("taken", width=140, anchor="center")
-        self.tree.column("filename_date", width=140, anchor="center")
-        self.tree.column("path", width=240, anchor="w")
+        self.column_settings: dict[str, tuple[int, AnchorLiteral]] = {
+            "name": (200, "w"),
+            "size": (100, "e"),
+            "created": (140, "center"),
+            "modified": (140, "center"),
+            "taken": (140, "center"),
+            "filename_date": (140, "center"),
+            "path": (240, "w"),
+        }
+        self.tree = ttk.Treeview(
+            browser_frame,
+            columns=columns,
+            show="headings",
+            height=16,
+        )
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<Button-3>", self._on_right_click)
+        self._configure_standard_tree(self.tree, self.item_to_record)
 
         browser_scrollbar = ttk.Scrollbar(browser_frame, orient="vertical", command=self.tree.yview)
         browser_scrollbar.grid(row=0, column=1, sticky="ns")
@@ -345,6 +424,59 @@ class PhotoMetadataViewer:
         self.fix_status_var = StringVar(value="No fixable files available.")
         ttk.Label(actions_frame, textvariable=self.fix_status_var).grid(row=0, column=1, sticky="e")
 
+        def set_from(target: str, source: str) -> Callable[[MediaRecord], None]:
+            return lambda record, t=target, s=source: self._set_timestamp_from_source(record, t, s)
+
+        anomaly_specs: list[tuple[str, Callable[[MediaRecord], bool], list[tuple[str, Callable[[MediaRecord], None]]]]] = [
+            (
+                "Modified > Created",
+                lambda rec: rec.modified_ts > rec.created_ts,
+                [
+                    ("Set Created = Modified", set_from("created", "modified")),
+                    ("Set Modified = Created", set_from("modified", "created")),
+                    ("Set Created = Taken At", set_from("created", "taken")),
+                    ("Set Modified = Taken At", set_from("modified", "taken")),
+                    ("Set Created = Filename", set_from("created", "filename")),
+                    ("Set Modified = Filename", set_from("modified", "filename")),
+                ],
+            ),
+            (
+                "Created > Modified",
+                lambda rec: rec.created_ts > rec.modified_ts,
+                [
+                    ("Set Modified = Created", set_from("modified", "created")),
+                    ("Set Created = Modified", set_from("created", "modified")),
+                    ("Set Modified = Taken At", set_from("modified", "taken")),
+                    ("Set Created = Taken At", set_from("created", "taken")),
+                    ("Set Modified = Filename", set_from("modified", "filename")),
+                    ("Set Created = Filename", set_from("created", "filename")),
+                ],
+            ),
+            (
+                "Taken > Created",
+                lambda rec: rec.taken_ts is not None and rec.taken_ts > rec.created_ts,
+                [
+                    ("Set Created = Taken At", set_from("created", "taken")),
+                    ("Set Taken = Created", set_from("taken", "created")),
+                    ("Set Created = Filename", set_from("created", "filename")),
+                    ("Set Taken = Filename", set_from("taken", "filename")),
+                ],
+            ),
+            (
+                "Taken < Created",
+                lambda rec: rec.taken_ts is not None and rec.taken_ts < rec.created_ts,
+                [
+                    ("Set Created = Taken At", set_from("created", "taken")),
+                    ("Set Taken = Created", set_from("taken", "created")),
+                    ("Set Created = Filename", set_from("created", "filename")),
+                    ("Set Taken = Filename", set_from("taken", "filename")),
+                ],
+            ),
+        ]
+
+        for label, predicate, actions in anomaly_specs:
+            self._create_anomaly_tab(label, predicate, actions)
+
         self.context_menu = Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="Open File", command=self._open_selected_file)
         self.context_menu.add_command(label="Open File Location", command=self._reveal_selected_file)
@@ -363,6 +495,75 @@ class PhotoMetadataViewer:
             wraplength=560,
             justify="center",
         ).grid(row=0, column=0, sticky="ew")
+
+    def _configure_standard_tree(self, tree: ttk.Treeview, mapping: dict[str, MediaRecord]) -> None:
+        for column in self.columns:
+            heading = self.headings[column]
+            tree.heading(
+                column,
+                text=heading,
+                command=lambda col=column, tgt_tree=tree, tgt_mapping=mapping: self._sort_by_column(
+                    tgt_tree,
+                    tgt_mapping,
+                    col,
+                    False,
+                ),
+            )
+            width, anchor = self.column_settings[column]
+            tree.column(column, width=width, anchor=anchor)
+
+    def _create_anomaly_tab(
+        self,
+        label: str,
+        filter_func: Callable[[MediaRecord], bool],
+        actions: list[tuple[str, Callable[[MediaRecord], None]]],
+    ) -> None:
+        frame = ttk.Frame(self.notebook)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        mapping: dict[str, MediaRecord] = {}
+        tree = ttk.Treeview(
+            frame,
+            columns=self.columns,
+            show="headings",
+            height=14,
+        )
+        tree.grid(row=0, column=0, sticky="nsew")
+        tree.bind("<Button-3>", self._on_right_click)
+        self._configure_standard_tree(tree, mapping)
+
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        controls = ttk.Frame(frame, padding=(0, 12, 0, 0))
+        controls.grid(row=1, column=0, columnspan=2, sticky="ew")
+        controls.columnconfigure(0, weight=1)
+
+        buttons_frame = ttk.Frame(controls)
+        buttons_frame.grid(row=0, column=0, sticky="w")
+
+        status_var = StringVar(value="Select file(s) then choose a fix.")
+        ttk.Label(controls, textvariable=status_var).grid(row=0, column=1, sticky="e")
+
+        for idx, (action_label, handler) in enumerate(actions):
+            ttk.Button(
+                buttons_frame,
+                text=action_label,
+                command=lambda func=handler, lbl=label: self._apply_anomaly_action(lbl, func),
+            ).grid(row=idx // 3, column=idx % 3, padx=(0, 6), pady=(0, 6), sticky="w")
+
+        self.notebook.add(frame, text=label)
+        self.anomaly_views[label] = {
+            "frame": frame,
+            "tree": tree,
+            "mapping": mapping,
+            "label": label,
+            "filter": filter_func,
+            "status_var": status_var,
+            "actions": actions,
+        }
 
     def request_directory(self) -> None:
         directory = filedialog.askdirectory()
@@ -383,6 +584,10 @@ class PhotoMetadataViewer:
             self.fix_status_var.set("Scanning for fixable files…")
             if self.fix_tab is not None:
                 self.notebook.tab(self.fix_tab, text="Taken At Fixes")
+        for view in self.anomaly_views.values():
+            view["tree"].delete(*view["tree"].get_children())
+            view["mapping"].clear()
+            self.notebook.tab(view["frame"], text=view["label"])
         self.progress.stop()
         self.progress.configure(mode="indeterminate", value=0)
         self.progress.start(10)
@@ -407,9 +612,12 @@ class PhotoMetadataViewer:
                 continue
 
             size_bytes = stats.st_size
-            created = format_timestamp(stats.st_ctime)
-            modified = format_timestamp(stats.st_mtime)
+            created_ts = stats.st_ctime
+            modified_ts = stats.st_mtime
+            created = format_timestamp(created_ts)
+            modified = format_timestamp(modified_ts)
             taken = get_exif_taken_date(path) or ""
+            taken_ts = parse_timestamp(taken or "")
             filename_date = extract_date_from_filename(path.name) or ""
             media_type = classify_media(path)
             proposed_taken = derive_proposed_taken(created, filename_date, taken)
@@ -422,6 +630,9 @@ class PhotoMetadataViewer:
                 filename_date=filename_date,
                 path=str(path),
                 media_type=media_type,
+                created_ts=created_ts,
+                modified_ts=modified_ts,
+                taken_ts=taken_ts,
                 proposed_taken=proposed_taken,
             )
             records.append(record)
@@ -497,6 +708,10 @@ class PhotoMetadataViewer:
                 self.fix_status_var.set("No fixable files available.")
                 if self.fix_tab is not None:
                     self.notebook.tab(self.fix_tab, text="Taken At Fixes")
+            for view in self.anomaly_views.values():
+                view["tree"].delete(*view["tree"].get_children())
+                view["mapping"].clear()
+                self.notebook.tab(view["frame"], text=view["label"])
             self.status_var.set("No supported media files found.")
             self.progress.configure(value=0)
             return
@@ -547,6 +762,7 @@ class PhotoMetadataViewer:
             self.status_var.set(f"Loaded {total} file(s).")
 
         self._render_fix_records()
+        self._render_anomaly_views()
 
     def _record_matches_filters(self, record: MediaRecord) -> bool:
         if self.only_taken_var.get() and not record.taken:
@@ -597,6 +813,170 @@ class PhotoMetadataViewer:
 
         self.fix_status_var.set("Select the rows to update and click Apply Selected Fixes.")
 
+    def _render_anomaly_views(self) -> None:
+        for view in self.anomaly_views.values():
+            tree = view["tree"]
+            mapping = view["mapping"]
+            status_var: Optional[StringVar] = view.get("status_var")
+            tree.delete(*tree.get_children())
+            mapping.clear()
+
+            subset = [record for record in self.records if view["filter"](record)]
+
+            label = view["label"]
+            if subset:
+                label = f"{label} ({len(subset)})"
+                if status_var is not None:
+                    status_var.set("Select file(s) then choose a fix.")
+            else:
+                if status_var is not None:
+                    status_var.set("No matching files.")
+            self.notebook.tab(view["frame"], text=label)
+
+            for record in subset:
+                values = (
+                    record.name,
+                    format_size(record.size_bytes),
+                    record.created,
+                    record.modified,
+                    record.taken,
+                    record.filename_date,
+                    record.path,
+                )
+                item = tree.insert("", "end", values=values)
+                mapping[item] = record
+
+    def _timestamp_from_source(self, record: MediaRecord, source: str) -> float:
+        if source == "created":
+            return record.created_ts
+        if source == "modified":
+            return record.modified_ts
+        if source == "taken":
+            if record.taken_ts is None:
+                raise ValueError("Taken At timestamp is not available.")
+            return record.taken_ts
+        if source == "filename":
+            ts = parse_timestamp(record.filename_date)
+            if ts is None:
+                raise ValueError("Filename does not contain a parsable date.")
+            return ts
+        raise ValueError(f"Unknown source '{source}'.")
+
+    def _set_timestamp_from_source(self, record: MediaRecord, target: str, source: str) -> None:
+        timestamp = self._timestamp_from_source(record, source)
+        if target == "created":
+            self._set_file_times(record, new_created_ts=timestamp)
+        elif target == "modified":
+            self._set_file_times(record, new_modified_ts=timestamp)
+        elif target == "taken":
+            self._write_taken_metadata(record, timestamp)
+        else:
+            raise ValueError(f"Unknown target '{target}'.")
+
+    def _set_file_times(
+        self,
+        record: MediaRecord,
+        new_created_ts: Optional[float] = None,
+        new_modified_ts: Optional[float] = None,
+    ) -> None:
+        path = Path(record.path)
+        if not path.exists():
+            raise FileNotFoundError(f"{path} does not exist.")
+
+        stats = path.stat()
+        created_ts = new_created_ts if new_created_ts is not None else record.created_ts
+        modified_ts = new_modified_ts if new_modified_ts is not None else record.modified_ts
+        accessed_ts = stats.st_atime
+
+        _set_windows_file_times(path, created_ts, accessed_ts, modified_ts)
+
+        if new_created_ts is not None:
+            record.created_ts = new_created_ts
+            record.created = format_timestamp(new_created_ts)
+        if new_modified_ts is not None:
+            record.modified_ts = new_modified_ts
+            record.modified = format_timestamp(new_modified_ts)
+
+        self._recompute_proposed_taken(record)
+
+    def _write_taken_metadata(self, record: MediaRecord, timestamp: float) -> None:
+        path = Path(record.path)
+        if not path.exists():
+            raise FileNotFoundError(f"{path} does not exist.")
+        if path.suffix.lower() not in WRITABLE_TAKEN_EXTENSIONS:
+            raise ValueError("Taken At updates are supported only for JPEG and TIFF files.")
+
+        new_value = format_timestamp(timestamp)
+        new_value_bytes = new_value.replace("-", ":", 2).encode("utf-8")
+
+        try:
+            exif_dict = piexif.load(str(path))
+        except Exception:
+            exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
+        exif_dict.setdefault("0th", {})
+        exif_dict.setdefault("Exif", {})
+
+        exif_dict["0th"][piexif.ImageIFD.DateTime] = new_value_bytes
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = new_value_bytes
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = new_value_bytes
+
+        exif_bytes = piexif.dump(exif_dict)
+        piexif.insert(exif_bytes, str(path))
+
+        record.taken = new_value
+        record.taken_ts = timestamp
+        record.proposed_taken = None
+        self._recompute_proposed_taken(record)
+
+    def _recompute_proposed_taken(self, record: MediaRecord) -> None:
+        record.proposed_taken = derive_proposed_taken(record.created, record.filename_date, record.taken)
+
+    def _apply_anomaly_action(
+        self,
+        view_label: str,
+        handler: Callable[[MediaRecord], None],
+    ) -> None:
+        view = self.anomaly_views.get(view_label)
+        if not view:
+            return
+
+        tree: ttk.Treeview = view["tree"]
+        mapping: dict[str, MediaRecord] = view["mapping"]
+        status_var: Optional[StringVar] = view.get("status_var")
+
+        selection = tree.selection()
+        if not selection:
+            messagebox.showinfo("Fix Timestamps", "Select at least one row to update.")
+            return
+
+        successes = 0
+        failures: list[tuple[str, str]] = []
+
+        for item in selection:
+            record = mapping.get(item)
+            if not record:
+                continue
+            try:
+                handler(record)
+                successes += 1
+            except Exception as exc:  # pragma: no cover - user-driven IO errors
+                failures.append((record.name, str(exc)))
+
+        if status_var is not None:
+            if successes:
+                status_var.set(f"Updated {successes} file(s).")
+            else:
+                status_var.set("No files updated.")
+
+        if failures:
+            summary = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
+            if len(failures) > 5:
+                summary += f"\n...and {len(failures) - 5} more."
+            messagebox.showerror("Fix Timestamps", f"Some updates failed:\n{summary}")
+
+        self._render_records()
+
     def _apply_selected_fixes(self) -> None:
         if not hasattr(self, "fix_tree"):
             return
@@ -604,14 +984,6 @@ class PhotoMetadataViewer:
         selection = self.fix_tree.selection()
         if not selection:
             messagebox.showinfo("Taken At Fixes", "Select at least one row to update.")
-            return
-
-        if not _PIEXIF_AVAILABLE:
-            messagebox.showerror(
-                "Taken At Fixes",
-                "Writing Taken At values requires the optional 'piexif' package.\n"
-                "Install it with 'pip install piexif' and try again.",
-            )
             return
 
         successes = 0
@@ -644,36 +1016,11 @@ class PhotoMetadataViewer:
         if not record.proposed_taken:
             return False
 
-        path = Path(record.path)
-        if not path.exists():
-            raise FileNotFoundError(f"{path} does not exist.")
+        timestamp = parse_timestamp(record.proposed_taken)
+        if timestamp is None:
+            raise ValueError("Proposed Taken At value is not a valid timestamp.")
 
-        if path.suffix.lower() not in WRITABLE_TAKEN_EXTENSIONS:
-            raise ValueError("Taken At updates are supported only for JPEG and TIFF files.")
-
-        if not _PIEXIF_AVAILABLE:
-            raise RuntimeError("piexif is required to write EXIF metadata.")
-
-        new_value = record.proposed_taken.replace("-", ":", 2)
-        new_value_bytes = new_value.encode("utf-8")
-
-        try:
-            exif_dict = piexif.load(str(path))
-        except Exception:
-            exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
-
-        exif_dict.setdefault("0th", {})
-        exif_dict.setdefault("Exif", {})
-
-        exif_dict["0th"][piexif.ImageIFD.DateTime] = new_value_bytes
-        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = new_value_bytes
-        exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = new_value_bytes
-
-        exif_bytes = piexif.dump(exif_dict)
-        piexif.insert(exif_bytes, str(path))
-
-        record.taken = record.proposed_taken
-        record.proposed_taken = None
+        self._write_taken_metadata(record, timestamp)
         return True
 
     def _on_right_click(self, event) -> None:
@@ -691,7 +1038,12 @@ class PhotoMetadataViewer:
         elif tree is getattr(self, "fix_tree", None):
             self._context_map = self.fix_item_to_record
         else:
-            self._context_map = {}
+            for view in self.anomaly_views.values():
+                if tree is view["tree"]:
+                    self._context_map = view["mapping"]
+                    break
+            else:
+                self._context_map = {}
         self._context_tree = tree
         try:
             self.context_menu.tk_popup(event.x_root, event.y_root)
