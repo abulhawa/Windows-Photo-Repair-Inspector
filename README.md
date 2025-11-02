@@ -6,11 +6,13 @@ A lightweight Python GUI for quickly inspecting the key timestamps associated wi
 
 - Python 3.9 or newer
 - `tkinter` (bundled with most Python distributions)
-- Optional: [`Pillow`](https://python-pillow.org/) to read EXIF metadata. Install with:
+- [`Pillow`](https://python-pillow.org/) to read EXIF metadata. Install with:
 
   ```bash
   pip install pillow
   ```
+
+- [`piexif`](https://github.com/hMatoba/Piexif) for the **Taken At Fixes** tab.
 
 The application still runs without Pillow, but the **Taken At** column will remain blank.
 
@@ -29,5 +31,6 @@ Supported extensions include: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.gif`, `.tiff`, 
 ## Notes
 
 - Scans run on a background thread to keep the UI responsive; large collections may still take time.
+- The **Taken At Fixes** tab lists files missing EXIF capture timestamps where the filename-derived date matches the filesystem creation date. Apply fixes to write that timestamp back into the photo (JPEG/TIFF only, requires `piexif`).
 - Files the app cannot read (permission issues, corrupt metadata, unsupported formats) are skipped silently to avoid interrupting your review.
 - On Windows, the app requests DPI awareness to look crisp on high-resolution displays.

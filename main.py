@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
@@ -14,21 +15,14 @@ from typing import Iterable, Optional
 if not sys.platform.startswith("win"):
     raise SystemExit("This application currently runs on Windows only.")
 
-try:
-    from tkinter import BooleanVar, Menu, StringVar, Tk, filedialog, messagebox, ttk
-except ImportError as exc:  # pragma: no cover - tkinter should exist on most systems
-    raise RuntimeError("tkinter is required to run this application") from exc
+from tkinter import BooleanVar, Menu, StringVar, Tk, filedialog, messagebox, ttk
 
-# Pillow is optional; we import lazily so the app still works without it.
-try:
-    from PIL import Image
-    from PIL.ExifTags import TAGS
+import piexif
+from PIL import Image
+from PIL.ExifTags import TAGS
 
-    _PIL_AVAILABLE = True
-except Exception:  # pragma: no cover - pillow may not be installed
-    Image = None  # type: ignore
-    TAGS = {}
-    _PIL_AVAILABLE = False
+_PIEXIF_AVAILABLE = True
+_PIL_AVAILABLE = True
 
 
 IMAGE_EXTENSIONS = {
@@ -57,6 +51,7 @@ VIDEO_EXTENSIONS = {
 }
 
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+WRITABLE_TAKEN_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff"}
 
 
 def format_size(num_bytes: int) -> str:
@@ -149,6 +144,30 @@ def classify_media(path: Path) -> str:
     return "other"
 
 
+def derive_proposed_taken(created: str, filename_date: str, taken: str) -> Optional[str]:
+    """Return the proposed Taken At value if eligible, else None."""
+    if not created or not filename_date:
+        return None
+    if taken:
+        return None
+    if created[:10] != filename_date[:10]:
+        return None
+    return created
+
+
+@dataclass
+class MediaRecord:
+    name: str
+    size_bytes: int
+    created: str
+    modified: str
+    taken: str
+    filename_date: str
+    path: str
+    media_type: str
+    proposed_taken: Optional[str] = None
+
+
 def open_file(path: Path) -> None:
     """Open the specified file with the system default handler."""
     os.startfile(str(path))  # type: ignore[attr-defined]
@@ -165,9 +184,15 @@ class PhotoMetadataViewer:
     def __init__(self, root: Tk) -> None:
         self.root = root
         self.root.title("Photo Metadata Viewer")
-        self.records: list[tuple[str, int, str, str, str, str, str, str]] = []
-        self.item_to_record: dict[str, tuple[str, int, str, str, str, str, str, str]] = {}
+        self.records: list[MediaRecord] = []
+        self.item_to_record: dict[str, MediaRecord] = {}
+        self.fix_item_to_record: dict[str, MediaRecord] = {}
         self.columns: tuple[str, ...] = ()
+        self.fix_columns: tuple[str, ...] = ()
+        self.browser_tab: Optional[ttk.Frame] = None
+        self.fix_tab: Optional[ttk.Frame] = None
+        self._context_tree: Optional[ttk.Treeview] = None
+        self._context_map: Optional[dict[str, MediaRecord]] = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -215,19 +240,29 @@ class PhotoMetadataViewer:
         self.progress = ttk.Progressbar(controls, mode="determinate", maximum=100)
         self.progress.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0))
 
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.grid(row=1, column=0, columnspan=1, sticky="nsew")
+
+        browser_frame = ttk.Frame(self.notebook)
+        fix_frame = ttk.Frame(self.notebook)
+        self.browser_tab = browser_frame
+        self.fix_tab = fix_frame
+        self.notebook.add(browser_frame, text="Library")
+        self.notebook.add(fix_frame, text="Taken At Fixes")
+
+        browser_frame.columnconfigure(0, weight=1)
+        browser_frame.rowconfigure(0, weight=1)
+
         columns = ("name", "size", "created", "modified", "taken", "filename_date", "path")
         self.columns = columns
         self.tree = ttk.Treeview(
-            main_frame,
+            browser_frame,
             columns=columns,
             show="headings",
             height=16,
         )
-        self.tree.grid(row=1, column=0, sticky="nsew")
+        self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.bind("<Button-3>", self._on_right_click)
-        self.context_menu = Menu(self.root, tearoff=0)
-        self.context_menu.add_command(label="Open File", command=self._open_selected_file)
-        self.context_menu.add_command(label="Open File Location", command=self._reveal_selected_file)
 
         headings = {
             "name": "File",
@@ -243,7 +278,7 @@ class PhotoMetadataViewer:
             self.tree.heading(
                 column,
                 text=heading,
-                command=lambda col=column: self._sort_by_column(col, False),
+                command=lambda col=column: self._sort_by_column(self.tree, self.item_to_record, col, False),
             )
 
         self.tree.column("name", width=200, anchor="w")
@@ -254,19 +289,76 @@ class PhotoMetadataViewer:
         self.tree.column("filename_date", width=140, anchor="center")
         self.tree.column("path", width=240, anchor="w")
 
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=self.tree.yview)
-        scrollbar.grid(row=1, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        browser_scrollbar = ttk.Scrollbar(browser_frame, orient="vertical", command=self.tree.yview)
+        browser_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=browser_scrollbar.set)
+
+        fix_frame.columnconfigure(0, weight=1)
+        fix_frame.rowconfigure(0, weight=1)
+
+        self.fix_columns = ("name", "created", "filename_date", "new_taken", "path")
+        self.fix_tree = ttk.Treeview(
+            fix_frame,
+            columns=self.fix_columns,
+            show="headings",
+            height=14,
+        )
+        self.fix_tree.grid(row=0, column=0, sticky="nsew")
+        self.fix_tree.bind("<Button-3>", self._on_right_click)
+
+        fix_headings = {
+            "name": "File",
+            "created": "Created At",
+            "filename_date": "Filename Date",
+            "new_taken": "New Taken At",
+            "path": "Location",
+        }
+
+        for column, heading in fix_headings.items():
+            self.fix_tree.heading(
+                column,
+                text=heading,
+                command=lambda col=column: self._sort_by_column(self.fix_tree, self.fix_item_to_record, col, False),
+            )
+
+        self.fix_tree.column("name", width=200, anchor="w")
+        self.fix_tree.column("created", width=140, anchor="center")
+        self.fix_tree.column("filename_date", width=140, anchor="center")
+        self.fix_tree.column("new_taken", width=160, anchor="center")
+        self.fix_tree.column("path", width=240, anchor="w")
+
+        fix_scrollbar = ttk.Scrollbar(fix_frame, orient="vertical", command=self.fix_tree.yview)
+        fix_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.fix_tree.configure(yscrollcommand=fix_scrollbar.set)
+
+        actions_frame = ttk.Frame(fix_frame, padding=(0, 12, 0, 0))
+        actions_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+        actions_frame.columnconfigure(0, weight=1)
+
+        apply_button = ttk.Button(
+            actions_frame,
+            text="Apply Selected Fixes",
+            command=self._apply_selected_fixes,
+        )
+        apply_button.grid(row=0, column=0, sticky="w")
+
+        self.fix_status_var = StringVar(value="No fixable files available.")
+        ttk.Label(actions_frame, textvariable=self.fix_status_var).grid(row=0, column=1, sticky="e")
+
+        self.context_menu = Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Open File", command=self._open_selected_file)
+        self.context_menu.add_command(label="Open File Location", command=self._reveal_selected_file)
 
         footer = ttk.Frame(main_frame)
-        footer.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        footer.grid(row=2, column=0, columnspan=1, sticky="ew", pady=(12, 0))
         footer.columnconfigure(0, weight=1)
 
         ttk.Label(
             footer,
             text=(
                 "Created/Modified come from filesystem timestamps. "
-                "Taken At is extracted from EXIF when available. Filename Date is parsed from the filename."
+                "Taken At is extracted from EXIF when available. Filename Date is parsed from the filename. "
+                "Use the Taken At Fixes tab to fill missing capture times when safe."
             ),
             wraplength=560,
             justify="center",
@@ -285,6 +377,12 @@ class PhotoMetadataViewer:
         self.status_var.set("Scanning…")
         self.records = []
         self.item_to_record.clear()
+        self.fix_item_to_record.clear()
+        if hasattr(self, "fix_tree"):
+            self.fix_tree.delete(*self.fix_tree.get_children())
+            self.fix_status_var.set("Scanning for fixable files…")
+            if self.fix_tab is not None:
+                self.notebook.tab(self.fix_tab, text="Taken At Fixes")
         self.progress.stop()
         self.progress.configure(mode="indeterminate", value=0)
         self.progress.start(10)
@@ -314,22 +412,51 @@ class PhotoMetadataViewer:
             taken = get_exif_taken_date(path) or ""
             filename_date = extract_date_from_filename(path.name) or ""
             media_type = classify_media(path)
-            records.append((path.name, size_bytes, created, modified, taken, filename_date, str(path), media_type))
+            proposed_taken = derive_proposed_taken(created, filename_date, taken)
+            record = MediaRecord(
+                name=path.name,
+                size_bytes=size_bytes,
+                created=created,
+                modified=modified,
+                taken=taken,
+                filename_date=filename_date,
+                path=str(path),
+                media_type=media_type,
+                proposed_taken=proposed_taken,
+            )
+            records.append(record)
 
             self.root.after(0, lambda count=index, tot=total: self._update_progress(count, tot))
 
         self.root.after(0, lambda: self._finalize_scan(records))
 
-    def _sort_by_column(self, column: str, descending: bool) -> None:
-        items = list(self.tree.get_children(""))
+    def _sort_by_column(
+        self,
+        tree: ttk.Treeview,
+        mapping: dict[str, MediaRecord],
+        column: str,
+        descending: bool,
+    ) -> None:
+        items = list(tree.get_children(""))
         if not items:
             return
 
         def get_sort_value(item_id: str):
-            record = self.item_to_record.get(item_id)
-            if column == "size" and record:
-                return record[1]
-            value = self.tree.set(item_id, column)
+            record = mapping.get(item_id)
+            if record:
+                if column == "size":
+                    return record.size_bytes
+                if column == "taken":
+                    return record.taken or ""
+                if column == "filename_date":
+                    return record.filename_date or ""
+                if column == "created":
+                    return record.created or ""
+                if column == "modified":
+                    return record.modified or ""
+                if column == "new_taken":
+                    return record.proposed_taken or ""
+            value = tree.set(item_id, column)
             if isinstance(value, str):
                 return value.lower()
             return value
@@ -337,11 +464,11 @@ class PhotoMetadataViewer:
         sorted_items = sorted(items, key=get_sort_value, reverse=descending)
 
         for position, item_id in enumerate(sorted_items):
-            self.tree.move(item_id, "", position)
+            tree.move(item_id, "", position)
 
-        self.tree.heading(
+        tree.heading(
             column,
-            command=lambda col=column: self._sort_by_column(col, not descending),
+            command=lambda col=column: self._sort_by_column(tree, mapping, col, not descending),
         )
 
     def _configure_progress(self, total: int) -> None:
@@ -359,11 +486,17 @@ class PhotoMetadataViewer:
         self.progress.configure(value=processed)
         self.status_var.set(f"Scanning… {processed}/{total}")
 
-    def _finalize_scan(self, records: list[tuple[str, int, str, str, str, str, str, str]]) -> None:
+    def _finalize_scan(self, records: list[MediaRecord]) -> None:
         self.records = records
         if not records:
             self.tree.delete(*self.tree.get_children())
             self.item_to_record.clear()
+            if hasattr(self, "fix_tree"):
+                self.fix_tree.delete(*self.fix_tree.get_children())
+                self.fix_item_to_record.clear()
+                self.fix_status_var.set("No fixable files available.")
+                if self.fix_tab is not None:
+                    self.notebook.tab(self.fix_tab, text="Taken At Fixes")
             self.status_var.set("No supported media files found.")
             self.progress.configure(value=0)
             return
@@ -383,13 +516,13 @@ class PhotoMetadataViewer:
 
         for record in display_records:
             values = (
-                record[0],
-                format_size(record[1]),
-                record[2],
-                record[3],
-                record[4],
-                record[5],
-                record[6],
+                record.name,
+                format_size(record.size_bytes),
+                record.created,
+                record.modified,
+                record.taken,
+                record.filename_date,
+                record.path,
             )
             item = self.tree.insert("", "end", values=values)
             self.item_to_record[item] = record
@@ -413,14 +546,16 @@ class PhotoMetadataViewer:
         else:
             self.status_var.set(f"Loaded {total} file(s).")
 
-    def _record_matches_filters(self, record: tuple[str, int, str, str, str, str, str, str]) -> bool:
-        if self.only_taken_var.get() and not record[4]:
+        self._render_fix_records()
+
+    def _record_matches_filters(self, record: MediaRecord) -> bool:
+        if self.only_taken_var.get() and not record.taken:
             return False
 
         media_filter = self.media_filter_var.get()
-        if media_filter == "Images" and record[7] != "image":
+        if media_filter == "Images" and record.media_type != "image":
             return False
-        if media_filter == "Videos" and record[7] != "video":
+        if media_filter == "Videos" and record.media_type != "video":
             return False
 
         return True
@@ -430,28 +565,157 @@ class PhotoMetadataViewer:
             return
         self._render_records()
 
+    def _render_fix_records(self) -> None:
+        if not hasattr(self, "fix_tree"):
+            return
+
+        self.fix_tree.delete(*self.fix_tree.get_children())
+        self.fix_item_to_record.clear()
+
+        fixable = [record for record in self.records if record.proposed_taken]
+
+        if self.fix_tab is not None:
+            label = "Taken At Fixes"
+            if fixable:
+                label = f"{label} ({len(fixable)})"
+            self.notebook.tab(self.fix_tab, text=label)
+
+        if not fixable:
+            self.fix_status_var.set("No fixable files available.")
+            return
+
+        for record in fixable:
+            values = (
+                record.name,
+                record.created,
+                record.filename_date,
+                record.proposed_taken or "",
+                record.path,
+            )
+            item = self.fix_tree.insert("", "end", values=values)
+            self.fix_item_to_record[item] = record
+
+        self.fix_status_var.set("Select the rows to update and click Apply Selected Fixes.")
+
+    def _apply_selected_fixes(self) -> None:
+        if not hasattr(self, "fix_tree"):
+            return
+
+        selection = self.fix_tree.selection()
+        if not selection:
+            messagebox.showinfo("Taken At Fixes", "Select at least one row to update.")
+            return
+
+        if not _PIEXIF_AVAILABLE:
+            messagebox.showerror(
+                "Taken At Fixes",
+                "Writing Taken At values requires the optional 'piexif' package.\n"
+                "Install it with 'pip install piexif' and try again.",
+            )
+            return
+
+        successes = 0
+        failures: list[tuple[str, str]] = []
+
+        for item in selection:
+            record = self.fix_item_to_record.get(item)
+            if not record or not record.proposed_taken:
+                continue
+            try:
+                changed = self._apply_taken_fix(record)
+            except Exception as exc:  # pragma: no cover - user-driven IO errors
+                failures.append((record.name, str(exc)))
+                continue
+            if changed:
+                successes += 1
+
+        if successes:
+            messagebox.showinfo("Taken At Fixes", f"Updated Taken At for {successes} file(s).")
+
+        if failures:
+            summary = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
+            if len(failures) > 5:
+                summary += f"\n...and {len(failures) - 5} more."
+            messagebox.showerror("Taken At Fixes", f"Some files could not be updated:\n{summary}")
+
+        self._render_records()
+
+    def _apply_taken_fix(self, record: MediaRecord) -> bool:
+        if not record.proposed_taken:
+            return False
+
+        path = Path(record.path)
+        if not path.exists():
+            raise FileNotFoundError(f"{path} does not exist.")
+
+        if path.suffix.lower() not in WRITABLE_TAKEN_EXTENSIONS:
+            raise ValueError("Taken At updates are supported only for JPEG and TIFF files.")
+
+        if not _PIEXIF_AVAILABLE:
+            raise RuntimeError("piexif is required to write EXIF metadata.")
+
+        new_value = record.proposed_taken.replace("-", ":", 2)
+        new_value_bytes = new_value.encode("utf-8")
+
+        try:
+            exif_dict = piexif.load(str(path))
+        except Exception:
+            exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
+        exif_dict.setdefault("0th", {})
+        exif_dict.setdefault("Exif", {})
+
+        exif_dict["0th"][piexif.ImageIFD.DateTime] = new_value_bytes
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = new_value_bytes
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = new_value_bytes
+
+        exif_bytes = piexif.dump(exif_dict)
+        piexif.insert(exif_bytes, str(path))
+
+        record.taken = record.proposed_taken
+        record.proposed_taken = None
+        return True
+
     def _on_right_click(self, event) -> None:
-        item = self.tree.identify_row(event.y)
+        if not isinstance(event.widget, ttk.Treeview):
+            return
+
+        tree = event.widget
+        item = tree.identify_row(event.y)
         if not item:
             return
-        self.tree.selection_set(item)
-        self.tree.focus(item)
+        tree.selection_set(item)
+        tree.focus(item)
+        if tree is getattr(self, "tree", None):
+            self._context_map = self.item_to_record
+        elif tree is getattr(self, "fix_tree", None):
+            self._context_map = self.fix_item_to_record
+        else:
+            self._context_map = {}
+        self._context_tree = tree
         try:
             self.context_menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.context_menu.grab_release()
 
-    def _get_selected_record(self) -> Optional[tuple[str, int, str, str, str, str, str, str]]:
-        selection = self.tree.selection()
+    def _get_selected_record(self, tree: ttk.Treeview, mapping: dict[str, MediaRecord]) -> Optional[MediaRecord]:
+        selection = tree.selection()
         if not selection:
             return None
-        return self.item_to_record.get(selection[0])
+        return mapping.get(selection[0])
+
+    def _get_context_record(self) -> Optional[MediaRecord]:
+        tree = self._context_tree or getattr(self, "tree", None)
+        mapping = self._context_map or self.item_to_record
+        if tree is None:
+            return None
+        return self._get_selected_record(tree, mapping)
 
     def _open_selected_file(self) -> None:
-        record = self._get_selected_record()
+        record = self._get_context_record()
         if not record:
             return
-        path = Path(record[-1])
+        path = Path(record.path)
         if not path.exists():
             messagebox.showerror("Open File", f"{path} does not exist.")
             return
@@ -461,10 +725,10 @@ class PhotoMetadataViewer:
             messagebox.showerror("Open File", f"Failed to open file:\n{exc}")
 
     def _reveal_selected_file(self) -> None:
-        record = self._get_selected_record()
+        record = self._get_context_record()
         if not record:
             return
-        path = Path(record[-1])
+        path = Path(record.path)
         if not path.exists():
             messagebox.showerror("Open Location", f"{path} does not exist.")
             return
