@@ -31,7 +31,9 @@ Supported extensions include: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.gif`, `.tiff`, 
 ## Notes
 
 - Scans run on a background thread to keep the UI responsive; large collections may still take time.
-- The **Taken At Fixes** tab lists files missing EXIF capture timestamps where the filename-derived date matches the filesystem creation date. Apply fixes to write that timestamp back into the photo (JPEG/TIFF only, requires `piexif`). Use the per-tab fix buttons to align Created/Modified/Taken timestamps or copy them from filename-derived dates.
+- The **Taken At Fixes** tab lists files missing EXIF capture timestamps where the filename-derived date matches the filesystem creation date. Apply fixes to write that timestamp back into the photo (JPEG/TIFF only, requires `piexif`). Use the per-tab fix buttons (including the Taken At tab) to align Created/Modified/Taken timestamps or copy them from filename-derived dates.
 - Dedicated tabs flag files where `Modified` and `Created` timestamps disagree, as well as photos whose EXIF `Taken At` diverges from file creation, making it easy to audit anomalies.
 - Files the app cannot read (permission issues, corrupt metadata, unsupported formats) are skipped silently to avoid interrupting your review.
+- Selection banners above each tab list how many files are currently selected so you know which items will be affected by fixes.
 - On Windows, the app requests DPI awareness to look crisp on high-resolution displays.
+

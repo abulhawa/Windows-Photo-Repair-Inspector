@@ -384,6 +384,7 @@ class PhotoMetadataViewer:
         )
         self.fix_tree.grid(row=0, column=0, sticky="nsew")
         self.fix_tree.bind("<Button-3>", self._on_right_click)
+        self.fix_tree.bind("<<TreeviewSelect>>", lambda _: self._update_fix_selection_status(force=True))
 
         fix_headings = {
             "name": "File",
@@ -412,17 +413,58 @@ class PhotoMetadataViewer:
 
         actions_frame = ttk.Frame(fix_frame, padding=(0, 12, 0, 0))
         actions_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
-        actions_frame.columnconfigure(0, weight=1)
+        for col in range(3):
+            actions_frame.columnconfigure(col, weight=0)
+        actions_frame.columnconfigure(3, weight=1)
 
-        apply_button = ttk.Button(
+        ttk.Button(
             actions_frame,
             text="Apply Selected Fixes",
             command=self._apply_selected_fixes,
-        )
-        apply_button.grid(row=0, column=0, sticky="w")
+        ).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Button(
+            actions_frame,
+            text="Open File",
+            command=self._open_selected_file,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 6))
+        ttk.Button(
+            actions_frame,
+            text="Open Location",
+            command=self._reveal_selected_file,
+        ).grid(row=0, column=2, sticky="w", padx=(0, 6))
 
         self.fix_status_var = StringVar(value="No fixable files available.")
-        ttk.Label(actions_frame, textvariable=self.fix_status_var).grid(row=0, column=1, sticky="e")
+        ttk.Label(actions_frame, textvariable=self.fix_status_var).grid(row=0, column=3, sticky="e")
+
+        fix_buttons = ttk.Frame(fix_frame, padding=(0, 0, 0, 12))
+        fix_buttons.grid(row=2, column=0, columnspan=2, sticky="ew")
+        fix_buttons.columnconfigure(0, weight=1)
+
+        ttk.Button(
+            fix_buttons,
+            text="Set Taken = Filename",
+            command=lambda: self._apply_fix_taken_action("filename"),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
+        ttk.Button(
+            fix_buttons,
+            text="Set Taken = Created",
+            command=lambda: self._apply_fix_taken_action("created"),
+        ).grid(row=0, column=1, sticky="w", padx=(0, 6), pady=(0, 6))
+        ttk.Button(
+            fix_buttons,
+            text="Set Created = Taken",
+            command=lambda: self._apply_fix_taken_mirror("created"),
+        ).grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
+        ttk.Button(
+            fix_buttons,
+            text="Set Modified = Taken",
+            command=lambda: self._apply_fix_taken_mirror("modified"),
+        ).grid(row=1, column=1, sticky="w", padx=(0, 6), pady=(0, 6))
+        ttk.Button(
+            fix_buttons,
+            text="Select All",
+            command=lambda: self._select_all_in_tree(self.fix_tree),
+        ).grid(row=0, column=2, sticky="w", padx=(0, 6), pady=(0, 6))
 
         def set_from(target: str, source: str) -> Callable[[MediaRecord], None]:
             return lambda record, t=target, s=source: self._set_timestamp_from_source(record, t, s)
@@ -467,6 +509,7 @@ class PhotoMetadataViewer:
                 lambda rec: rec.taken_ts is not None and rec.taken_ts < rec.created_ts,
                 [
                     ("Set Created = Taken At", set_from("created", "taken")),
+                    ("Set Modified = Taken At", set_from("modified", "taken")),
                     ("Set Taken = Created", set_from("taken", "created")),
                     ("Set Created = Filename", set_from("created", "filename")),
                     ("Set Taken = Filename", set_from("taken", "filename")),
@@ -531,6 +574,7 @@ class PhotoMetadataViewer:
         )
         tree.grid(row=0, column=0, sticky="nsew")
         tree.bind("<Button-3>", self._on_right_click)
+        tree.bind("<<TreeviewSelect>>", lambda _, lbl=label: self._update_anomaly_selection_status(lbl, force=True))
         self._configure_standard_tree(tree, mapping)
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
@@ -546,6 +590,13 @@ class PhotoMetadataViewer:
 
         status_var = StringVar(value="Select file(s) then choose a fix.")
         ttk.Label(controls, textvariable=status_var).grid(row=0, column=1, sticky="e")
+
+        select_all_btn = ttk.Button(
+            controls,
+            text="Select All",
+            command=lambda t=tree: self._select_all_in_tree(t),
+        )
+        select_all_btn.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         for idx, (action_label, handler) in enumerate(actions):
             ttk.Button(
@@ -812,6 +863,7 @@ class PhotoMetadataViewer:
             self.fix_item_to_record[item] = record
 
         self.fix_status_var.set("Select the rows to update and click Apply Selected Fixes.")
+        self._update_fix_selection_status(force=True)
 
     def _render_anomaly_views(self) -> None:
         for view in self.anomaly_views.values():
@@ -846,6 +898,8 @@ class PhotoMetadataViewer:
                 item = tree.insert("", "end", values=values)
                 mapping[item] = record
 
+            self._update_anomaly_selection_status(view["label"], force=bool(subset))
+
     def _timestamp_from_source(self, record: MediaRecord, source: str) -> float:
         if source == "created":
             return record.created_ts
@@ -853,7 +907,10 @@ class PhotoMetadataViewer:
             return record.modified_ts
         if source == "taken":
             if record.taken_ts is None:
-                raise ValueError("Taken At timestamp is not available.")
+                ts = parse_timestamp(record.taken)
+                if ts is None:
+                    raise ValueError("Taken At timestamp is not available.")
+                record.taken_ts = ts
             return record.taken_ts
         if source == "filename":
             ts = parse_timestamp(record.filename_date)
@@ -963,11 +1020,7 @@ class PhotoMetadataViewer:
             except Exception as exc:  # pragma: no cover - user-driven IO errors
                 failures.append((record.name, str(exc)))
 
-        if status_var is not None:
-            if successes:
-                status_var.set(f"Updated {successes} file(s).")
-            else:
-                status_var.set("No files updated.")
+        message = f"Updated {successes} file(s)." if successes else "No files updated."
 
         if failures:
             summary = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
@@ -976,6 +1029,9 @@ class PhotoMetadataViewer:
             messagebox.showerror("Fix Timestamps", f"Some updates failed:\n{summary}")
 
         self._render_records()
+        if status_var is not None:
+            status_var.set(message)
+        self._update_anomaly_selection_status(view_label)
 
     def _apply_selected_fixes(self) -> None:
         if not hasattr(self, "fix_tree"):
@@ -1023,6 +1079,112 @@ class PhotoMetadataViewer:
         self._write_taken_metadata(record, timestamp)
         return True
 
+    def _apply_fix_taken_action(self, source: str) -> None:
+        selection = self.fix_tree.selection()
+        if not selection:
+            messagebox.showinfo("Taken At Fixes", "Select at least one row to update.")
+            return
+
+        successes = 0
+        failures: list[tuple[str, str]] = []
+
+        for item in selection:
+            record = self.fix_item_to_record.get(item)
+            if not record:
+                continue
+            try:
+                timestamp = self._timestamp_from_source(record, source)
+                self._write_taken_metadata(record, timestamp)
+                successes += 1
+            except Exception as exc:  # pragma: no cover - user-driven IO errors
+                failures.append((record.name, str(exc)))
+
+        if failures:
+            summary = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
+            if len(failures) > 5:
+                summary += f"\n...and {len(failures) - 5} more."
+            messagebox.showerror("Taken At Fixes", f"Some files could not be updated:\n{summary}")
+
+        msg = (
+            f"Updated Taken At for {successes} file(s)." if successes else "No files updated."
+        )
+
+        self._render_records()
+        if status_var is not None:
+            status_var.set(message)
+        self.fix_status_var.set(msg)
+
+    def _select_all_in_tree(self, tree: Optional[ttk.Treeview]) -> None:
+        if tree is None:
+            return
+        children = tree.get_children()
+        tree.selection_set(children)
+        tree.event_generate("<<TreeviewSelect>>")
+
+    def _update_fix_selection_status(self, force: bool = False) -> None:
+        if not hasattr(self, "fix_tree"):
+            return
+        count = len(self.fix_tree.selection())
+        if count:
+            self.fix_status_var.set(f"{count} file(s) selected.")
+        elif force:
+            self.fix_status_var.set("Select file(s) then choose a fix.")
+
+    def _update_anomaly_selection_status(self, label: str, force: bool = False) -> None:
+        view = self.anomaly_views.get(label)
+        if not view:
+            return
+        tree: ttk.Treeview = view["tree"]
+        status_var: Optional[StringVar] = view.get("status_var")
+        if status_var is None:
+            return
+        count = len(tree.selection())
+        if count:
+            status_var.set(f"{count} file(s) selected.")
+        elif force:
+            status_var.set("Select file(s) then choose a fix.")
+
+    def _apply_fix_taken_mirror(self, target: str) -> None:
+        selection = self.fix_tree.selection()
+        if not selection:
+            messagebox.showinfo("Taken At Fixes", "Select at least one row to update.")
+            return
+
+        successes = 0
+        failures: list[tuple[str, str]] = []
+
+        for item in selection:
+            record = self.fix_item_to_record.get(item)
+            if not record:
+                continue
+            try:
+                if record.taken_ts is None:
+                    raise ValueError("Taken At timestamp is not available.")
+                if target == "created":
+                    self._set_file_times(record, new_created_ts=record.taken_ts)
+                elif target == "modified":
+                    self._set_file_times(record, new_modified_ts=record.taken_ts)
+                else:
+                    raise ValueError("Unknown target.")
+                successes += 1
+            except Exception as exc:  # pragma: no cover - user-driven IO errors
+                failures.append((record.name, str(exc)))
+
+        if failures:
+            summary = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
+            if len(failures) > 5:
+                summary += f"\n...and {len(failures) - 5} more."
+            messagebox.showerror("Taken At Fixes", f"Some files could not be updated:\n{summary}")
+
+        msg = (
+            f"Updated filesystem timestamps for {successes} file(s)."
+            if successes
+            else "No files updated."
+        )
+
+        self._render_records()
+        self.fix_status_var.set(msg)
+
     def _on_right_click(self, event) -> None:
         if not isinstance(event.widget, ttk.Treeview):
             return
@@ -1057,15 +1219,32 @@ class PhotoMetadataViewer:
         return mapping.get(selection[0])
 
     def _get_context_record(self) -> Optional[MediaRecord]:
-        tree = self._context_tree or getattr(self, "tree", None)
-        mapping = self._context_map or self.item_to_record
-        if tree is None:
-            return None
-        return self._get_selected_record(tree, mapping)
+        candidates: list[tuple[Optional[ttk.Treeview], dict[str, MediaRecord]]] = []
+        if self._context_tree is not None:
+            candidates.append((self._context_tree, self._context_map or {}))
+        candidates.append((getattr(self, "tree", None), self.item_to_record))
+        if hasattr(self, "fix_tree"):
+            candidates.append((self.fix_tree, self.fix_item_to_record))
+        for view in self.anomaly_views.values():
+            candidates.append((view["tree"], view["mapping"]))
+
+        for tree, mapping in candidates:
+            if tree is None:
+                continue
+            selection = tree.selection()
+            if not selection:
+                continue
+            record = mapping.get(selection[0])
+            if record:
+                self._context_tree = tree
+                self._context_map = mapping
+                return record
+        return None
 
     def _open_selected_file(self) -> None:
         record = self._get_context_record()
         if not record:
+            messagebox.showinfo("Open File", "Select a file first.")
             return
         path = Path(record.path)
         if not path.exists():
@@ -1079,6 +1258,7 @@ class PhotoMetadataViewer:
     def _reveal_selected_file(self) -> None:
         record = self._get_context_record()
         if not record:
+            messagebox.showinfo("Open Location", "Select a file first.")
             return
         path = Path(record.path)
         if not path.exists():
