@@ -204,6 +204,27 @@ def extract_date_from_filename(filename: str) -> Optional[str]:
     return None
 
 
+def extract_fb_epoch_from_filename(filename: str) -> Optional[tuple[str, float]]:
+    """Return the epoch-like token and derived timestamp from common Facebook filenames."""
+    stem = Path(filename).stem
+    matches = re.findall(r"\d{10,13}", stem)
+    for token in matches:
+        seconds: Optional[float] = None
+        if len(token) == 10:
+            seconds = float(int(token))
+        elif len(token) == 13:
+            seconds = float(int(token)) / 1000.0
+        if seconds is None:
+            continue
+        try:
+            dt = datetime.fromtimestamp(seconds)
+        except (ValueError, OSError, OverflowError):
+            continue
+        if 2004 <= dt.year <= 2100:
+            return token, seconds
+    return None
+
+
 def classify_media(path: Path) -> str:
     """Return 'image' or 'video' based on file extension."""
     suffix = path.suffix.lower()
@@ -518,6 +539,21 @@ class PhotoMetadataViewer:
                     ("Set Taken = Created", set_from("taken", "created")),
                     ("Set Created = Filename", set_from("created", "filename")),
                     ("Set Taken = Filename", set_from("taken", "filename")),
+                ],
+            ),
+            (
+                "  All  ",
+                lambda rec: rec.created_ts is not None,
+                [
+                    ("Set Created = Taken At", set_from("created", "taken")),
+                    ("Set Created = Filename", set_from("created", "filename")),
+                    ("Set Created = Modified", set_from("created", "modified")),
+                    ("Set Modified = Taken At", set_from("modified", "taken")),
+                    ("Set Modified = Created", set_from("modified", "created")),
+                    ("Set Modified = Filename", set_from("modified", "filename")),
+                    ("Set Taken = Created", set_from("taken", "created")),
+                    ("Set Taken = Modified", set_from("taken", "modified")),
+                    ("Set Taken = Filename", set_from("taken", "filename")), 
                 ],
             ),
         ]
