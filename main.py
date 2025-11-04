@@ -1146,14 +1146,12 @@ class PhotoMetadataViewer:
                 summary += f"\n...and {len(failures) - 5} more."
             messagebox.showerror("Taken At Fixes", f"Some files could not be updated:\n{summary}")
 
-        msg = (
+        message = (
             f"Updated Taken At for {successes} file(s)." if successes else "No files updated."
         )
 
         self._render_records()
-        if status_var is not None:
-            status_var.set(message)
-        self.fix_status_var.set(msg)
+        self.fix_status_var.set(message)
 
     def _select_all_in_tree(self, tree: Optional[ttk.Treeview]) -> None:
         if tree is None:
