@@ -49,7 +49,7 @@ The scanner recognizes common image formats including JPEG, PNG, BMP, GIF, TIFF,
 
 EXIF capture-time reading is format-dependent. HEIC/HEIF reading is enabled through `pillow-heif`.
 
-Writing `Taken At` metadata is intentionally limited to JPEG and TIFF files. Video files are currently inspected using filesystem and filename timestamps only.
+Writing `Taken At` metadata is intentionally limited to JPEG files. TIFF can be inspected but is not modified because the current EXIF writer does not safely support in-place TIFF insertion. Video files are currently inspected using filesystem and filename timestamps only.
 
 ## Filename timestamp inference
 
@@ -147,7 +147,7 @@ GitHub Actions runs the test suite on both Windows and Linux and also compiles t
 ## Current limitations
 
 - The application is Windows-only because filesystem creation-time repair uses the Windows API.
-- EXIF `Taken At` writes are limited to JPEG/TIFF.
+- EXIF `Taken At` writes are limited to JPEG.
 - RAW camera formats are not currently supported.
 - The tool does not infer timezone offsets that are absent from source metadata.
 - Backups can consume significant disk space when many large files are repaired.
