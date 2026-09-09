@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import piexif
-from PIL import Image
+from PIL import ExifTags, Image
 
 from .core import WRITABLE_TAKEN_EXTENSIONS, format_timestamp
 
@@ -23,25 +24,69 @@ _DATETIME_ORIGINAL = 36867
 _DATETIME_DIGITIZED = 36868
 
 
+def _format_exif_datetime(value: Any) -> Optional[str]:
+    """Normalize an EXIF date value to the application's timestamp format."""
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("ascii", errors="strict")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(value, str):
+        return None
+
+    value = value.strip()
+    if not value:
+        return None
+
+    # Standard EXIF dates use YYYY:MM:DD HH:MM:SS. Only the first two colons
+    # belong to the date; time colons must remain unchanged.
+    return value.replace(":", "-", 2)
+
+
+def _first_datetime(mapping: Mapping[int, Any], tags: tuple[int, ...]) -> Optional[str]:
+    for tag in tags:
+        value = _format_exif_datetime(mapping.get(tag))
+        if value:
+            return value
+    return None
+
+
 def get_exif_taken_date(path: Path) -> Optional[str]:
-    """Read the best available EXIF capture timestamp without modifying the file."""
+    """Read the best available EXIF capture timestamp without modifying the file.
+
+    Pillow keeps DateTimeOriginal and DateTimeDigitized in the nested Exif IFD
+    for many JPEGs. Reading only the top-level EXIF mapping therefore produces
+    false negatives, so both the nested IFD and top-level mapping are checked.
+    """
     try:
         with Image.open(path) as image:
             exif = image.getexif()
             if not exif:
                 return None
-            for tag in (_DATETIME_ORIGINAL, _DATETIME_DIGITIZED, _DATETIME):
-                value = exif.get(tag)
-                if isinstance(value, bytes):
-                    try:
-                        value = value.decode("ascii", errors="strict")
-                    except UnicodeDecodeError:
-                        continue
-                if isinstance(value, str) and value.strip():
-                    return value.strip().replace(":", "-", 2)
+
+            # DateTimeOriginal and DateTimeDigitized normally live in the Exif
+            # sub-IFD referenced by tag 34665. Pillow exposes it via get_ifd().
+            try:
+                exif_ifd = exif.get_ifd(ExifTags.IFD.Exif)
+            except (AttributeError, KeyError, TypeError, ValueError, OSError):
+                exif_ifd = {}
+
+            if exif_ifd:
+                taken = _first_datetime(
+                    exif_ifd,
+                    (_DATETIME_ORIGINAL, _DATETIME_DIGITIZED, _DATETIME),
+                )
+                if taken:
+                    return taken
+
+            # Some encoders flatten capture-date tags or only provide the 0th
+            # IFD DateTime value, so keep a top-level fallback.
+            return _first_datetime(
+                exif,
+                (_DATETIME_ORIGINAL, _DATETIME_DIGITIZED, _DATETIME),
+            )
     except (OSError, ValueError):
         return None
-    return None
 
 
 def write_taken_metadata(path: Path, timestamp: float) -> None:
