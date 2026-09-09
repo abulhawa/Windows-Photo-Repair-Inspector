@@ -40,8 +40,17 @@ class RepairService:
 
         backup = self.backup_root / relative
         if not backup.exists():
+            stats = path.stat()
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, backup)
+            # copy2 preserves modified/access metadata, but Windows creation time is
+            # not guaranteed to survive a copy. Restore all three explicitly.
+            set_file_times(
+                backup,
+                created_ts=stats.st_ctime,
+                modified_ts=stats.st_mtime,
+                accessed_ts=stats.st_atime,
+            )
         return backup
 
     def _append_log(
@@ -90,6 +99,7 @@ class RepairService:
 
         backup: Path | None = None
         try:
+            original_stats = path.stat()
             backup = self.backup_file(path)
             if target == "created":
                 set_file_times(path, created_ts=timestamp)
@@ -97,6 +107,14 @@ class RepairService:
                 set_file_times(path, modified_ts=timestamp)
             elif target == "taken":
                 write_taken_metadata(path, timestamp)
+                # Metadata insertion writes the file and would otherwise change its
+                # filesystem timestamps. Keep an EXIF-only repair EXIF-only.
+                set_file_times(
+                    path,
+                    created_ts=record.created_ts,
+                    modified_ts=record.modified_ts,
+                    accessed_ts=original_stats.st_atime,
+                )
             else:
                 raise ValueError(f"Unknown repair target: {target}")
         except Exception as exc:
