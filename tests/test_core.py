@@ -3,6 +3,7 @@ from pathlib import Path
 
 from photo_repair.core import (
     MediaRecord,
+    WRITABLE_TAKEN_EXTENSIONS,
     classify_media,
     derive_proposed_taken,
     detect_issues,
@@ -74,8 +75,10 @@ def test_millisecond_epoch_detection():
     assert datetime.fromtimestamp(timestamp).year == 2024
 
 
-def test_tif_is_an_image():
+def test_tif_is_an_image_but_not_a_writable_exif_target():
     assert classify_media(Path("photo.tif")) == "image"
+    assert ".tif" not in WRITABLE_TAKEN_EXTENSIONS
+    assert ".tiff" not in WRITABLE_TAKEN_EXTENSIONS
 
 
 def test_date_only_proposal_prefers_creation_time():
