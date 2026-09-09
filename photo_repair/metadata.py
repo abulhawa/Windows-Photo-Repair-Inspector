@@ -45,13 +45,13 @@ def get_exif_taken_date(path: Path) -> Optional[str]:
 
 
 def write_taken_metadata(path: Path, timestamp: float) -> None:
-    """Update EXIF capture timestamps while preserving existing metadata.
+    """Update JPEG EXIF capture timestamps while preserving existing metadata.
 
     If existing EXIF cannot be parsed safely, the write is refused rather than
     replacing metadata with a new empty EXIF block.
     """
     if path.suffix.lower() not in WRITABLE_TAKEN_EXTENSIONS:
-        raise ValueError("Taken At updates are supported only for JPEG and TIFF files.")
+        raise ValueError("Taken At updates are currently supported only for JPEG files.")
 
     value = format_timestamp(timestamp)
     if not value:
