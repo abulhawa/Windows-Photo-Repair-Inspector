@@ -1,39 +1,152 @@
-# Photo Metadata Viewer
+# Photo Metadata Repair Inspector
 
-A lightweight Python GUI for quickly inspecting the key timestamps associated with your photos. Point the app at any folder and it will list every supported media file together with the filesystem **Created At** and **Modified At** values, plus the EXIF **Taken At** timestamp whenever available.
+A Windows desktop utility for inspecting inconsistent photo and media timestamps and repairing them with explicit backups and an audit trail.
 
-## Requirements
+Photo collections copied between computers, restored from backups, downloaded from social platforms, or migrated between services often end up with conflicting dates. The filesystem may say one thing, EXIF metadata another, while the original filename still contains the capture date. This tool puts those signals side by side, flags suspicious inconsistencies, and provides controlled repair actions.
 
-- Python 3.9 or newer
-- `tkinter` (bundled with most Python distributions)
-- [`Pillow`](https://python-pillow.org/) to read EXIF metadata. Install with:
+## What it inspects
 
-  ```bash
-  pip install pillow
-  ```
+For each supported media file the application compares:
 
-- [`piexif`](https://github.com/hMatoba/Piexif) for the **Taken At Fixes** tab.
+- Windows filesystem **Created** timestamp
+- Windows filesystem **Modified** timestamp
+- EXIF **Taken At** timestamp when available
+- Capture timestamps inferred from common camera, phone, screenshot, and social-media filenames
 
-The application still runs without Pillow, but the **Taken At** column will remain blank.
+The **Issues** view highlights cases such as:
 
-## Usage
+- missing EXIF `Taken At`
+- `Modified > Created`
+- `Created > Modified`
+- `Taken > Created`
+- `Taken < Created`
+
+## Repair safety
+
+Repairs modify the selected file in place, but the application first preserves the original under:
+
+```text
+.photo-repair-backups/
+```
+
+inside the scanned folder. Existing backups are not overwritten, so the first-seen original remains available.
+
+Every attempted repair is also appended to:
+
+```text
+.photo-repair-repair-log.csv
+```
+
+with the file path, operation, before/after values, backup location, and status.
+
+EXIF writes are deliberately conservative. If existing EXIF metadata cannot be parsed safely, the application refuses the write rather than replacing the metadata with a new empty EXIF block.
+
+> Keep an independent backup of important photo collections. This utility changes file metadata and filesystem timestamps by design.
+
+## Supported media
+
+The scanner recognizes common image formats including JPEG, PNG, BMP, GIF, TIFF, HEIC/HEIF, and WebP, plus common video formats such as MP4, MOV, AVI, MKV, WMV, M4V, MPEG, 3GP, and WebM.
+
+EXIF capture-time reading is format-dependent. HEIC/HEIF reading is enabled through `pillow-heif`.
+
+Writing `Taken At` metadata is intentionally limited to JPEG and TIFF files. Video files are currently inspected using filesystem and filename timestamps only.
+
+## Filename timestamp inference
+
+The parser recognizes common patterns such as:
+
+```text
+IMG_20240321_174532.jpg
+PXL_20240321_174532.jpg
+Screenshot 2024-03-21 at 17.45.32.png
+holiday_2024-03-21.jpg
+holiday_03-21-2024.jpg
+```
+
+It also recognizes plausible 10-digit and 13-digit Unix epoch values embedded in social-media export filenames.
+
+Date-only filenames are treated conservatively: when the filename date agrees with the Windows creation date, the creation time is preferred over inventing a midnight capture time.
+
+## Installation
+
+Requirements:
+
+- Windows 10 or 11
+- Python 3.10+
+
+Clone the repository and install it in editable mode:
+
+```bash
+git clone https://github.com/abulhawa/Windows-Photo-Repair-Inspector.git
+cd Windows-Photo-Repair-Inspector
+python -m pip install -e .
+```
+
+Run it with either:
 
 ```bash
 python main.py
 ```
 
-1. Click **Scan Folder…** and choose the directory that contains your photos.
-2. Wait for the scan to finish; the status bar shows progress and the number of discovered files.
-3. Browse the results in the table. Columns are sortable—just click the heading you want to sort by.
+or:
 
-Supported extensions include: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.gif`, `.tiff`, `.heic`, `.webp`, `.raw`.
+```bash
+photo-repair-inspector
+```
 
-## Notes
+A plain requirements file is also included:
 
-- Scans run on a background thread to keep the UI responsive; large collections may still take time.
-- The **Taken At Fixes** tab lists files missing EXIF capture timestamps where the filename-derived date matches the filesystem creation date. Apply fixes to write that timestamp back into the photo (JPEG/TIFF only, requires `piexif`). Use the per-tab fix buttons (including the Taken At tab) to align Created/Modified/Taken timestamps or copy them from filename-derived dates.
-- Dedicated tabs flag files where `Modified` and `Created` timestamps disagree, as well as photos whose EXIF `Taken At` diverges from file creation, making it easy to audit anomalies.
-- Files the app cannot read (permission issues, corrupt metadata, unsupported formats) are skipped silently to avoid interrupting your review.
-- Selection banners above each tab list how many files are currently selected so you know which items will be affected by fixes.
-- On Windows, the app requests DPI awareness to look crisp on high-resolution displays.
+```bash
+python -m pip install -r requirements.txt
+```
 
+## Workflow
+
+1. Click **Scan Folder…** and select a media collection.
+2. Review all detected files in **Library**.
+3. Open **Issues** and optionally filter by inconsistency type.
+4. Select one or more rows.
+5. Choose a repair such as `Created = Taken`, `Taken = Filename`, or `Modified = Filename`.
+6. Confirm the operation. Original files are backed up before writes.
+7. Review the resulting CSV audit trail under **Repair Log**.
+
+## Project structure
+
+```text
+.
+├── main.py                 # small application entry point
+├── photo_repair/
+│   ├── app.py              # Tkinter UI and scan orchestration
+│   ├── core.py             # timestamp parsing and issue detection
+│   ├── metadata.py         # EXIF reading/writing
+│   ├── repair.py           # backup, repair and audit-log service
+│   ├── scanner.py          # media scanning
+│   └── windows.py          # Windows FILETIME operations
+├── tests/
+│   └── test_core.py
+├── .github/workflows/
+│   └── tests.yml
+├── pyproject.toml
+└── requirements.txt
+```
+
+The parsing and issue-detection logic is kept independent of Tkinter and Windows APIs so it can be unit tested directly.
+
+## Tests
+
+Install development dependencies and run:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest
+```
+
+GitHub Actions runs the test suite on both Windows and Linux and also compiles the package to catch syntax/import regressions.
+
+## Current limitations
+
+- The application is Windows-only because filesystem creation-time repair uses the Windows API.
+- EXIF `Taken At` writes are limited to JPEG/TIFF.
+- RAW camera formats are not currently supported.
+- The tool does not infer timezone offsets that are absent from source metadata.
+- Backups can consume significant disk space when many large files are repaired.
