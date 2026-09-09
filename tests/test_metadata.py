@@ -5,7 +5,42 @@ import pytest
 from PIL import Image
 
 from photo_repair import metadata
-from photo_repair.metadata import write_taken_metadata
+from photo_repair.metadata import get_exif_taken_date, write_taken_metadata
+
+
+def test_read_taken_from_nested_exif_ifd(tmp_path):
+    path = tmp_path / "photo.jpg"
+    Image.new("RGB", (12, 12), "white").save(path)
+
+    exif = {
+        "0th": {piexif.ImageIFD.DateTime: b"2024:03:21 18:00:00"},
+        "Exif": {
+            piexif.ExifIFD.DateTimeOriginal: b"2024:03:21 17:45:32",
+            piexif.ExifIFD.DateTimeDigitized: b"2024:03:21 17:45:33",
+        },
+        "GPS": {},
+        "1st": {},
+        "thumbnail": None,
+    }
+    piexif.insert(piexif.dump(exif), str(path))
+
+    assert get_exif_taken_date(path) == "2024-03-21 17:45:32"
+
+
+def test_read_taken_falls_back_to_top_level_datetime(tmp_path):
+    path = tmp_path / "photo.jpg"
+    Image.new("RGB", (12, 12), "white").save(path)
+
+    exif = {
+        "0th": {piexif.ImageIFD.DateTime: b"2024:03:21 18:00:00"},
+        "Exif": {},
+        "GPS": {},
+        "1st": {},
+        "thumbnail": None,
+    }
+    piexif.insert(piexif.dump(exif), str(path))
+
+    assert get_exif_taken_date(path) == "2024-03-21 18:00:00"
 
 
 def test_write_taken_preserves_existing_exif(tmp_path):
