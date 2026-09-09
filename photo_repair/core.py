@@ -36,6 +36,7 @@ VIDEO_EXTENSIONS = {
 
 SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 WRITABLE_TAKEN_EXTENSIONS = {".jpg", ".jpeg"}
+_TIMESTAMP_TOLERANCE_SECONDS = 1.0
 
 
 @dataclass
@@ -174,17 +175,22 @@ def derive_proposed_taken(created: str, filename_date: str, taken: str) -> Optio
     return filename_date if filename_date[11:] != "00:00:00" else created
 
 
+def _is_later(left: float, right: float) -> bool:
+    """Return True only when left is meaningfully later at displayed precision."""
+    return left - right >= _TIMESTAMP_TOLERANCE_SECONDS
+
+
 def detect_issues(record: MediaRecord) -> tuple[str, ...]:
     issues: list[str] = []
     if not record.taken and record.media_type == "image":
         issues.append("Missing Taken At")
-    if record.modified_ts > record.created_ts:
+    if _is_later(record.modified_ts, record.created_ts):
         issues.append("Modified > Created")
-    elif record.created_ts > record.modified_ts:
+    elif _is_later(record.created_ts, record.modified_ts):
         issues.append("Created > Modified")
     if record.taken_ts is not None:
-        if record.taken_ts > record.created_ts:
+        if _is_later(record.taken_ts, record.created_ts):
             issues.append("Taken > Created")
-        elif record.taken_ts < record.created_ts:
+        elif _is_later(record.created_ts, record.taken_ts):
             issues.append("Taken < Created")
     return tuple(issues)
