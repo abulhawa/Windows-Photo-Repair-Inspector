@@ -135,3 +135,19 @@ def test_detect_modified_after_created():
         modified_ts=parse_timestamp("2024-03-21 19:00:00"),
     )
     assert "Modified > Created" in detect_issues(record)
+
+
+def test_subsecond_modified_difference_is_not_an_issue():
+    base = parse_timestamp("2024-03-21 18:00:00")
+    assert base is not None
+    record = make_record(created_ts=base + 0.10, modified_ts=base + 0.85)
+    issues = detect_issues(record)
+    assert "Modified > Created" not in issues
+    assert "Created > Modified" not in issues
+
+
+def test_one_second_modified_difference_is_an_issue():
+    base = parse_timestamp("2024-03-21 18:00:00")
+    assert base is not None
+    record = make_record(created_ts=base, modified_ts=base + 1.0)
+    assert "Modified > Created" in detect_issues(record)
