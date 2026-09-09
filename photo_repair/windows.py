@@ -32,8 +32,9 @@ def set_file_times(
     *,
     created_ts: Optional[float] = None,
     modified_ts: Optional[float] = None,
+    accessed_ts: Optional[float] = None,
 ) -> None:
-    """Set Windows creation and/or modification timestamps, preserving access time."""
+    """Set Windows file timestamps while preserving unspecified values."""
     if not sys.platform.startswith("win"):
         raise RuntimeError("Filesystem timestamp repair is available only on Windows.")
 
@@ -61,7 +62,7 @@ def set_file_times(
     stats = path.stat()
     creation = created_ts if created_ts is not None else stats.st_ctime
     modified = modified_ts if modified_ts is not None else stats.st_mtime
-    accessed = stats.st_atime
+    accessed = accessed_ts if accessed_ts is not None else stats.st_atime
 
     handle = kernel32.CreateFileW(
         str(path),
