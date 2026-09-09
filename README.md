@@ -39,7 +39,7 @@ Every attempted repair is also appended to:
 
 with the file path, operation, before/after values, backup location, and status.
 
-EXIF writes are deliberately conservative. If existing EXIF metadata cannot be parsed safely, the application refuses the write rather than replacing the metadata with a new empty EXIF block.
+EXIF writes are deliberately conservative. If existing EXIF metadata cannot be parsed safely, the application refuses the write rather than replacing the metadata with a new empty EXIF block. EXIF-only repairs also restore the original filesystem Created, Modified, and Accessed timestamps after the metadata write.
 
 > Keep an independent backup of important photo collections. This utility changes file metadata and filesystem timestamps by design.
 
@@ -123,7 +123,8 @@ python -m pip install -r requirements.txt
 │   ├── scanner.py          # media scanning
 │   └── windows.py          # Windows FILETIME operations
 ├── tests/
-│   └── test_core.py
+│   ├── test_core.py
+│   └── test_metadata.py
 ├── .github/workflows/
 │   └── tests.yml
 ├── pyproject.toml
