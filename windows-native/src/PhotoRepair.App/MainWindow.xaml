@@ -31,7 +31,19 @@
   </Grid>
   <ListView x:Name="Table" Grid.Row="3" ItemsSource="{Binding Rows}" SelectionMode="None"
    ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollMode="Enabled">
-   <ListView.ItemContainerStyle><Style TargetType="ListViewItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/></Style></ListView.ItemContainerStyle>
+   <ListView.ItemContainerStyle>
+    <Style TargetType="ListViewItem">
+     <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+     <Setter Property="Padding" Value="0"/>
+     <Setter Property="UseSystemFocusVisuals" Value="True"/>
+     <!-- The stock presenter reserves space for its own selection checkbox.
+          This table supplies one checkbox bound to the shared selection model. -->
+     <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListViewItem">
+      <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+       HorizontalContentAlignment="Stretch"/>
+     </ControlTemplate></Setter.Value></Setter>
+    </Style>
+   </ListView.ItemContainerStyle>
    <ListView.Header>
     <StackPanel Orientation="Horizontal" Spacing="0">
      <TextBlock Text="Select" Width="64" VerticalAlignment="Center"/>
@@ -47,7 +59,7 @@
      <Grid Tapped="RowTapped" KeyDown="RowKeyDown" Padding="0,6" Background="Transparent" ToolTipService.ToolTip="{Binding Record.Path}">
       <Grid.ContextFlyout><MenuFlyout><MenuFlyoutItem Text="Open file" Click="OpenFile"/><MenuFlyoutItem Text="Show in Explorer" Click="RevealFile"/><MenuFlyoutItem Text="Copy full path" Click="CopyPath"/></MenuFlyout></Grid.ContextFlyout>
       <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="240"/><ColumnDefinition Width="75"/><ColumnDefinition Width="90"/><ColumnDefinition Width="165"/><ColumnDefinition Width="165"/><ColumnDefinition Width="165"/><ColumnDefinition Width="165"/><ColumnDefinition Width="260"/><ColumnDefinition Width="250"/></Grid.ColumnDefinitions>
-      <CheckBox IsChecked="{Binding IsSelected, Mode=OneWay}" Click="CheckboxClicked" AutomationProperties.Name="{Binding Record.Name}"/>
+      <CheckBox MinWidth="0" Width="32" HorizontalAlignment="Left" IsChecked="{Binding IsSelected, Mode=OneWay}" Click="CheckboxClicked" AutomationProperties.Name="{Binding Record.Name}"/>
       <TextBlock Grid.Column="1" Text="{Binding Record.Name}" TextTrimming="CharacterEllipsis"/>
       <TextBlock Grid.Column="2" Text="{Binding Record.MediaType}"/>
       <TextBlock Grid.Column="3" Text="{Binding Record.Size}"/>
