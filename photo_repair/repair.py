@@ -31,6 +31,18 @@ class RepairService:
             return record.filename_ts
         raise ValueError(f"{source.title()} timestamp is not available for {record.name}.")
 
+    def preview_change(self, record: MediaRecord, target: str, source: str) -> tuple[str, str]:
+        """Return the displayed before/after values for a proposed repair."""
+        timestamp = self._source_timestamp(record, source)
+        before = {
+            "created": record.created,
+            "modified": record.modified,
+            "taken": record.taken,
+        }.get(target)
+        if before is None:
+            raise ValueError(f"Unknown repair target: {target}")
+        return before or "(missing)", format_timestamp(timestamp)
+
     def backup_file(self, path: Path) -> Path:
         path = path.resolve()
         try:
@@ -89,12 +101,7 @@ class RepairService:
             raise FileNotFoundError(f"{path} does not exist.")
 
         timestamp = self._source_timestamp(record, source)
-        before = {
-            "created": record.created,
-            "modified": record.modified,
-            "taken": record.taken,
-        }.get(target, "")
-        after = format_timestamp(timestamp)
+        before, after = self.preview_change(record, target, source)
         operation = f"Set {target.title()} = {source.title()}"
 
         backup: Path | None = None
