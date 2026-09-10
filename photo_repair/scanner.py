@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from .core import (
     MediaRecord,
@@ -21,6 +22,7 @@ from .metadata import get_exif_taken_date
 
 _BACKUP_DIR_NAME = ".photo-repair-backups"
 _MAX_SCAN_WORKERS = 8
+ProgressCallback = Callable[[int, int], None]
 
 
 def scan_file(path: Path) -> MediaRecord:
@@ -51,8 +53,14 @@ def scan_file(path: Path) -> MediaRecord:
     return record
 
 
-def iter_scannable_paths(root: Path) -> Iterable[Path]:
+def iter_scannable_paths(
+    root: Path,
+    cancel_event: Optional[threading.Event] = None,
+) -> Iterable[Path]:
+    """Yield supported files, stopping discovery promptly when requested."""
     for path in iter_media_files(root):
+        if cancel_event is not None and cancel_event.is_set():
+            break
         try:
             relative_parts = path.relative_to(root).parts
         except ValueError:
@@ -62,8 +70,13 @@ def iter_scannable_paths(root: Path) -> Iterable[Path]:
         yield path
 
 
-def _safe_scan_file(path: Path) -> Optional[MediaRecord]:
+def _safe_scan_file(
+    path: Path,
+    cancel_event: Optional[threading.Event] = None,
+) -> Optional[MediaRecord]:
     """Scan one file while isolating ordinary per-file read failures."""
+    if cancel_event is not None and cancel_event.is_set():
+        return None
     try:
         return scan_file(path)
     except (OSError, ValueError):
@@ -78,22 +91,56 @@ def _scan_worker_count(file_count: int) -> int:
     return min(_MAX_SCAN_WORKERS, file_count, max(2, cpu_hint))
 
 
-def scan_directory(root: Path) -> list[MediaRecord]:
-    """Scan media metadata concurrently while preserving discovery order.
+def scan_directory(
+    root: Path,
+    *,
+    cancel_event: Optional[threading.Event] = None,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> list[MediaRecord]:
+    """Scan media metadata concurrently with cancellation and progress reporting.
 
-    Image inspection is dominated by short filesystem and metadata reads rather
-    than CPU-heavy image decoding. A bounded thread pool allows those reads to
-    overlap on modern storage without spawning an excessive number of workers.
+    File discovery is performed first so the caller receives an exact total. Metadata
+    reads then run in a bounded thread pool. Results are returned in discovery order,
+    even though individual files finish out of order. If cancellation is requested,
+    pending work is cancelled and already completed records are returned.
     """
-    paths = list(iter_scannable_paths(root))
-    if not paths:
+    paths = list(iter_scannable_paths(root, cancel_event))
+    total = len(paths)
+    if progress_callback is not None:
+        progress_callback(0, total)
+
+    if not paths or (cancel_event is not None and cancel_event.is_set()):
         return []
 
-    workers = _scan_worker_count(len(paths))
-    if workers == 1:
-        record = _safe_scan_file(paths[0])
-        return [record] if record is not None else []
+    workers = _scan_worker_count(total)
+    ordered_records: list[Optional[MediaRecord]] = [None] * total
+    completed = 0
 
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="photo-scan") as executor:
-        results = executor.map(_safe_scan_file, paths)
-        return [record for record in results if record is not None]
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="photo-scan",
+    ) as executor:
+        futures = {
+            executor.submit(_safe_scan_file, path, cancel_event): index
+            for index, path in enumerate(paths)
+        }
+
+        for future in as_completed(futures):
+            if cancel_event is not None and cancel_event.is_set():
+                for pending in futures:
+                    pending.cancel()
+                break
+
+            index = futures[future]
+            try:
+                record = future.result()
+            except CancelledError:
+                continue
+
+            if record is not None:
+                ordered_records[index] = record
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total)
+
+    return [record for record in ordered_records if record is not None]
