@@ -35,6 +35,19 @@ Media metadata is read concurrently with a bounded worker pool to keep scans res
 
 Stopping a metadata scan cancels queued work and allows currently active metadata reads to finish cleanly. Any already completed records can be shown as partial results. If scanning is stopped before metadata processing begins, the previous collection remains loaded.
 
+## Repair workflow
+
+Repair selection is explicit and does not depend on knowing Windows multi-select shortcuts. The **Review** table has a checkbox column for choosing which files belong to the repair batch, together with **Select all visible** and **Clear selection** controls.
+
+After selecting files:
+
+1. Choose a repair method from the **Repair method** dropdown.
+2. Review the selected-file count.
+3. Press **Apply repair**.
+4. Confirm the operation before any file is changed.
+
+The Apply button remains disabled until both a repair method and at least one file have been selected.
+
 ## Repair safety
 
 Repairs modify the selected file in place, but the application first preserves the original under:
@@ -121,9 +134,9 @@ python -m pip install -r requirements.txt
 3. Browse all detected files in **Library**.
 4. Open **Review** to see only conditions worth checking or repairing.
 5. Filter the review list if needed.
-6. Select one or more rows.
-7. Choose a grouped repair action such as **Set Taken At > From filename** or **Set Created > From Taken At**.
-8. Confirm the operation. Original files are backed up before writes.
+6. Select files using the checkbox column, or use **Select all visible**.
+7. Choose a repair method from the dropdown.
+8. Press **Apply repair** and confirm the operation.
 9. Review the resulting CSV audit trail under **Repair Log**.
 
 ## Project structure
