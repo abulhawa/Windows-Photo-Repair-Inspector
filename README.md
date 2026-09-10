@@ -23,6 +23,18 @@ Normal filesystem ordering is not treated as an error. `Modified > Created` is e
 
 Timestamp comparisons use a one-second tolerance so sub-second filesystem precision does not create review items that appear identical in the UI.
 
+## Scanning
+
+Media metadata is read concurrently with a bounded worker pool to keep scans responsive without overwhelming storage. During a scan the interface shows:
+
+- exact processed and total file counts
+- percentage complete
+- elapsed time
+- estimated remaining time once enough samples are available for a useful estimate
+- a **Stop** control for cooperative cancellation
+
+Stopping a metadata scan cancels queued work and allows currently active metadata reads to finish cleanly. Any already completed records can be shown as partial results. If scanning is stopped before metadata processing begins, the previous collection remains loaded.
+
 ## Repair safety
 
 Repairs modify the selected file in place, but the application first preserves the original under:
@@ -105,13 +117,14 @@ python -m pip install -r requirements.txt
 ## Workflow
 
 1. Click **Scan Folder…** and select a media collection.
-2. Browse all detected files in **Library**.
-3. Open **Review** to see only conditions worth checking or repairing.
-4. Filter the review list if needed.
-5. Select one or more rows.
-6. Choose a grouped repair action such as **Set Taken At > From filename** or **Set Created > From Taken At**.
-7. Confirm the operation. Original files are backed up before writes.
-8. Review the resulting CSV audit trail under **Repair Log**.
+2. Follow the live progress indicator, or click **Stop** to cancel the current scan.
+3. Browse all detected files in **Library**.
+4. Open **Review** to see only conditions worth checking or repairing.
+5. Filter the review list if needed.
+6. Select one or more rows.
+7. Choose a grouped repair action such as **Set Taken At > From filename** or **Set Created > From Taken At**.
+8. Confirm the operation. Original files are backed up before writes.
+9. Review the resulting CSV audit trail under **Repair Log**.
 
 ## Project structure
 
@@ -123,11 +136,12 @@ python -m pip install -r requirements.txt
 │   ├── core.py             # timestamp parsing and review detection
 │   ├── metadata.py         # EXIF reading/writing
 │   ├── repair.py           # backup, repair and audit-log service
-│   ├── scanner.py          # media scanning
+│   ├── scanner.py          # concurrent, cancellable media scanning
 │   └── windows.py          # Windows FILETIME operations
 ├── tests/
 │   ├── test_core.py
-│   └── test_metadata.py
+│   ├── test_metadata.py
+│   └── test_scanner.py
 ├── .github/workflows/
 │   └── tests.yml
 ├── pyproject.toml
