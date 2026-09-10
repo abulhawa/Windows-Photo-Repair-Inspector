@@ -119,35 +119,72 @@ def test_existing_taken_timestamp_disables_proposal():
     )
 
 
-def test_detect_missing_taken():
+def test_missing_taken_is_reviewable_for_jpeg():
     record = make_record(taken="", taken_ts=None)
     assert "Missing Taken At" in detect_issues(record)
 
 
-def test_detect_taken_before_created():
-    record = make_record()
-    assert "Taken < Created" in detect_issues(record)
+def test_missing_taken_is_not_reviewable_for_png():
+    record = make_record(
+        name="Screenshot.png",
+        path=r"C:\photos\Screenshot.png",
+        taken="",
+        taken_ts=None,
+    )
+    assert "Missing Taken At" not in detect_issues(record)
 
 
-def test_detect_modified_after_created():
+def test_modified_after_created_is_normal():
     record = make_record(
         modified="2024-03-21 19:00:00",
         modified_ts=parse_timestamp("2024-03-21 19:00:00"),
     )
-    assert "Modified > Created" in detect_issues(record)
+    assert detect_issues(record) == ()
 
 
-def test_subsecond_modified_difference_is_not_an_issue():
-    base = parse_timestamp("2024-03-21 18:00:00")
-    assert base is not None
-    record = make_record(created_ts=base + 0.10, modified_ts=base + 0.85)
+def test_created_after_modified_is_normal_after_copy():
+    record = make_record(
+        created="2024-03-22 10:00:00",
+        created_ts=parse_timestamp("2024-03-22 10:00:00"),
+        modified="2024-03-21 18:00:00",
+        modified_ts=parse_timestamp("2024-03-21 18:00:00"),
+    )
+    assert detect_issues(record) == ()
+
+
+def test_taken_before_created_is_normal_after_import():
+    record = make_record()
+    assert "Taken < Created" not in detect_issues(record)
+    assert detect_issues(record) == ()
+
+
+def test_taken_after_created_is_reviewable():
+    record = make_record(
+        created="2024-03-21 17:00:00",
+        created_ts=parse_timestamp("2024-03-21 17:00:00"),
+        modified="2024-03-21 18:00:00",
+        modified_ts=parse_timestamp("2024-03-21 18:00:00"),
+    )
+    assert "Taken > Created" in detect_issues(record)
+    assert "Taken > Modified" not in detect_issues(record)
+
+
+def test_taken_after_modified_is_reviewable():
+    record = make_record(
+        created="2024-03-21 17:00:00",
+        created_ts=parse_timestamp("2024-03-21 17:00:00"),
+        modified="2024-03-21 17:30:00",
+        modified_ts=parse_timestamp("2024-03-21 17:30:00"),
+    )
     issues = detect_issues(record)
-    assert "Modified > Created" not in issues
-    assert "Created > Modified" not in issues
+    assert "Taken > Created" in issues
+    assert "Taken > Modified" in issues
 
 
-def test_one_second_modified_difference_is_an_issue():
-    base = parse_timestamp("2024-03-21 18:00:00")
-    assert base is not None
-    record = make_record(created_ts=base, modified_ts=base + 1.0)
-    assert "Modified > Created" in detect_issues(record)
+def test_subsecond_differences_are_not_reviewed():
+    record = make_record(
+        created_ts=1000.0,
+        modified_ts=1000.7,
+        taken_ts=1000.8,
+    )
+    assert detect_issues(record) == ()
