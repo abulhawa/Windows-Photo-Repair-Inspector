@@ -35,22 +35,40 @@ Media metadata is read concurrently with a bounded worker pool to keep scans res
 
 Stopping a metadata scan cancels queued work and allows currently active metadata reads to finish cleanly. Any already completed records can be shown as partial results. If scanning is stopped before metadata processing begins, the previous collection remains loaded.
 
+The internal `.photo-repair-backups` directory is excluded from scanning, so recovery copies do not reappear as duplicate media records on later scans.
+
+## Interface
+
+The desktop UI is intentionally compact so the media table remains the main part of the window.
+
+- A small top toolbar contains the scanned folder, scan controls, filename/path search, and media-type filter.
+- **Library**, **Review**, and **Repair log** remain separate tabs.
+- The Location column shows only the containing folder because the filename already has its own column.
+- Column headers are sortable, including Created, Modified, Taken At, Filename Date, Review reason, size, type, file, and location.
+- Search filters by filename or full path and applies to both Library and Review.
+- Review supports checkboxes, Ctrl-click, Shift-click, **Select all**, and **Clear** using one shared selection state.
+- Right-clicking a file exposes open, Explorer, path-copy, and repair-selection actions.
+- Repair controls stay in a compact action bar under the Review table instead of occupying a large panel.
+
 ## Repair workflow
-
-The **Review** table supports both explicit checkboxes and normal Windows multi-selection. Checkbox clicks, Ctrl-click, Shift-click, **Select all**, and **Clear selection** all operate on the same repair selection. Shift-click range selection uses the first selected anchor and then selects the inclusive range to the clicked row.
-
-Each file also has a right-click menu with context actions such as adding/removing it from the repair selection, selecting only that file, opening it, showing it in Explorer, and copying its full path.
 
 After selecting files:
 
-1. Choose a repair method from the **Repair method** dropdown.
-2. Decide whether to keep **Create backup before repair** enabled. It is enabled by default.
-3. Review the visible action summary and selected-file count.
-4. Press **Apply repair**.
-5. Review the warning dialog showing the target field, source field, number of files that will change, skipped files, before → after examples, and backup status.
-6. Confirm before any file is changed.
+1. Choose a repair method from the **Repair** dropdown.
+2. Decide whether **Backup originals** should remain enabled. It is enabled by default.
+3. Press **Review changes…**.
+4. Inspect the preview dialog showing the action, counts, backup status, and up to the first 10 before/after examples.
+5. Confirm with **Apply N changes**.
 
-The Apply button remains disabled until both a repair method and at least one file have been selected. Files that already match the requested value or cannot provide the selected source timestamp are skipped rather than modified unnecessarily.
+The preview deliberately does not enumerate every file in a large batch. For example, a 1,000-file repair shows summary counts and a limited sample rather than creating an unusable confirmation dialog.
+
+Files that already match the requested value or cannot provide the selected source timestamp are skipped rather than modified unnecessarily.
+
+## What happens after a repair
+
+Each successfully changed file is rescanned immediately. The in-memory record is replaced with the metadata now present on disk, so Created, Modified, Taken At, Filename Date, review reasons, and other displayed values update without requiring a complete folder rescan.
+
+If the repair resolves the file's final review condition, that file disappears from **Review** but remains visible in **Library** with its updated values. If another review condition still applies, it remains in Review with the new metadata.
 
 ## Repair safety
 
@@ -60,9 +78,9 @@ Repairs always modify the selected file in place. By default, the application fi
 .photo-repair-backups/
 ```
 
-inside the scanned folder. Existing backups are not overwritten, so the first-seen original remains available.
+inside the scanned folder. Existing backups are not overwritten, so the first pre-repair original remains available even if the same file is repaired again later.
 
-Backup creation can be disabled in the repair panel for users who explicitly want an in-place overwrite without creating a recovery copy. When backup is disabled, the confirmation dialog states that no recovery copy will be created by the application.
+Backup creation can be disabled for users who explicitly want an in-place change without a recovery copy. When backup is disabled, the preview dialog clearly states that no recovery copy will be created by the application.
 
 Every attempted repair is appended to:
 
@@ -133,26 +151,14 @@ A plain requirements file is also included:
 python -m pip install -r requirements.txt
 ```
 
-## Workflow
-
-1. Click **Scan Folder…** and select a media collection.
-2. Follow the live progress indicator, or click **Stop** to cancel the current scan.
-3. Browse all detected files in **Library**.
-4. Open **Review** to see only conditions worth checking or repairing.
-5. Filter the review list if needed.
-6. Select files using checkboxes, Ctrl-click, Shift-click, or **Select all**.
-7. Right-click a file for per-file context actions when needed.
-8. Choose a repair method and choose whether a backup should be created.
-9. Press **Apply repair**, review the before/after confirmation and backup status, and explicitly confirm the write.
-10. Review the resulting CSV audit trail under **Repair Log**.
-
 ## Project structure
 
 ```text
 .
-├── main.py                 # small application entry point
+├── main.py                 # application entry point
 ├── photo_repair/
-│   ├── app.py              # Tkinter UI and scan orchestration
+│   ├── app.py              # compatibility entry point
+│   ├── ui.py               # Tkinter UI and scan orchestration
 │   ├── core.py             # timestamp parsing and review detection
 │   ├── metadata.py         # EXIF reading/writing
 │   ├── repair.py           # backup, preview, repair and audit-log service
@@ -164,14 +170,15 @@ python -m pip install -r requirements.txt
 │   ├── test_optional_backup.py
 │   ├── test_repair_preview.py
 │   ├── test_scanner.py
-│   └── test_selection.py
+│   ├── test_selection.py
+│   └── test_ui_helpers.py
 ├── .github/workflows/
 │   └── tests.yml
 ├── pyproject.toml
 └── requirements.txt
 ```
 
-The parsing and review logic is kept independent of Tkinter and Windows APIs so it can be unit tested directly.
+The parsing, selection-range, search, and sort logic are kept testable independently of running the full Windows GUI.
 
 ## Tests
 
