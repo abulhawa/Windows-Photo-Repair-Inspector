@@ -5,6 +5,7 @@ Work in the repository `abulhawa/Windows-Photo-Repair-Inspector`.
 Read these files before changing code:
 
 - `docs/windows-native-migration.md`
+- `docs/store-identity.md`
 - `spec/behavior-contract.json`
 - `photo_repair/core.py`
 - `photo_repair/metadata.py`
@@ -20,6 +21,12 @@ The Python implementation is the current behavioral reference. Do not rewrite or
 Create a native Windows edition under `windows-native/` using C#, .NET 10 and a packaged WinUI 3 application. The first implementation should reach behavioral parity with the Python application before adding new repair rules or expanding writable formats.
 
 Use the latest stable Windows App SDK available in the installed toolchain. Do not use preview packages unless a stable package cannot satisfy a required feature, and if that happens stop and report the blocker rather than silently adopting preview dependencies.
+
+## Microsoft Store identity
+
+The Store product has already been reserved. Use the exact identity values in `docs/store-identity.md`. Do not invent package identity values and do not create a second Store identity.
+
+The reserved Store product is **Photo Metadata Repair Inspector**, Store ID `9PPP5290T27G`.
 
 ## Required solution structure
 
@@ -141,7 +148,7 @@ Stop and report rather than guessing if any of these occur:
 - WinUI template/tooling unavailable on the machine
 - stable Windows App SDK cannot target the intended supported Windows versions
 - selected metadata API requires JPEG re-encoding for a Taken At-only write
-- Store/MSIX identity values are required but have not yet been supplied from Partner Center
+- the Store association tooling produces package identity values that differ from `docs/store-identity.md`
 - a parity decision conflicts with the existing Python tests or `spec/behavior-contract.json`
 
 ## Completion report
