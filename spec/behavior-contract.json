@@ -1,0 +1,244 @@
+{
+  "contract_version": 1,
+  "timestamp_display_format": "yyyy-MM-dd HH:mm:ss",
+  "timestamp_tolerance_seconds": 1.0,
+  "writable_taken_extensions": [".jpg", ".jpeg"],
+  "review_filters": [
+    "Missing Taken At",
+    "Taken > Created",
+    "Taken > Modified"
+  ],
+  "repair_methods": [
+    {
+      "label": "Set Taken At from filename",
+      "target": "taken",
+      "source": "filename"
+    },
+    {
+      "label": "Set Taken At from Created",
+      "target": "taken",
+      "source": "created"
+    },
+    {
+      "label": "Set Created from Taken At",
+      "target": "created",
+      "source": "taken"
+    },
+    {
+      "label": "Set Created from filename",
+      "target": "created",
+      "source": "filename"
+    },
+    {
+      "label": "Set Modified from Taken At",
+      "target": "modified",
+      "source": "taken"
+    },
+    {
+      "label": "Set Modified from filename",
+      "target": "modified",
+      "source": "filename"
+    }
+  ],
+  "filename_parsing_cases": [
+    {
+      "name": "camera_datetime",
+      "filename": "IMG_20240321_174532.jpg",
+      "expected": "2024-03-21 17:45:32"
+    },
+    {
+      "name": "pixel_datetime_with_milliseconds",
+      "filename": "PXL_20240321_174532123.jpg",
+      "expected": "2024-03-21 17:45:32"
+    },
+    {
+      "name": "screenshot_datetime",
+      "filename": "Screenshot 2024-03-21 at 17.45.32.png",
+      "expected": "2024-03-21 17:45:32"
+    },
+    {
+      "name": "year_first_date_only",
+      "filename": "holiday_2024-03-21.jpg",
+      "expected": "2024-03-21 00:00:00"
+    },
+    {
+      "name": "us_date_only",
+      "filename": "holiday_03-21-2024.jpg",
+      "expected": "2024-03-21 00:00:00"
+    },
+    {
+      "name": "invalid_calendar_date",
+      "filename": "IMG_20240231.jpg",
+      "expected": null
+    }
+  ],
+  "epoch_filename_cases": [
+    {
+      "name": "seconds_epoch",
+      "filename": "12345_1711043132_67890.jpg",
+      "expected_token": "1711043132",
+      "expected_local_year": 2024
+    },
+    {
+      "name": "milliseconds_epoch",
+      "filename": "photo_1711043132000.jpg",
+      "expected_token": "1711043132000",
+      "expected_local_year": 2024
+    }
+  ],
+  "proposed_taken_cases": [
+    {
+      "name": "date_only_prefers_created_time",
+      "created": "2024-03-21 18:00:00",
+      "filename_date": "2024-03-21 00:00:00",
+      "taken": "",
+      "expected": "2024-03-21 18:00:00"
+    },
+    {
+      "name": "full_filename_time_is_preserved",
+      "created": "2024-03-21 18:00:00",
+      "filename_date": "2024-03-21 17:45:32",
+      "taken": "",
+      "expected": "2024-03-21 17:45:32"
+    },
+    {
+      "name": "dates_must_match",
+      "created": "2024-03-22 18:00:00",
+      "filename_date": "2024-03-21 17:45:32",
+      "taken": "",
+      "expected": null
+    },
+    {
+      "name": "existing_taken_disables_proposal",
+      "created": "2024-03-21 18:00:00",
+      "filename_date": "2024-03-21 17:45:32",
+      "taken": "2024-03-21 17:00:00",
+      "expected": null
+    }
+  ],
+  "issue_detection_cases": [
+    {
+      "name": "missing_taken_jpeg",
+      "path": "C:\\photos\\sample.jpg",
+      "media_type": "image",
+      "created_ts": 1000.0,
+      "modified_ts": 1000.0,
+      "taken_ts": null,
+      "taken": "",
+      "expected_issues": ["Missing Taken At"]
+    },
+    {
+      "name": "missing_taken_png_not_reviewed",
+      "path": "C:\\photos\\sample.png",
+      "media_type": "image",
+      "created_ts": 1000.0,
+      "modified_ts": 1000.0,
+      "taken_ts": null,
+      "taken": "",
+      "expected_issues": []
+    },
+    {
+      "name": "modified_after_created_is_normal",
+      "path": "C:\\photos\\sample.jpg",
+      "media_type": "image",
+      "created_ts": 1000.0,
+      "modified_ts": 2000.0,
+      "taken_ts": 900.0,
+      "taken": "2024-03-21 17:45:32",
+      "expected_issues": []
+    },
+    {
+      "name": "created_after_modified_is_normal",
+      "path": "C:\\photos\\sample.jpg",
+      "media_type": "image",
+      "created_ts": 2000.0,
+      "modified_ts": 1000.0,
+      "taken_ts": 900.0,
+      "taken": "2024-03-21 17:45:32",
+      "expected_issues": []
+    },
+    {
+      "name": "taken_before_created_is_normal",
+      "path": "C:\\photos\\sample.jpg",
+      "media_type": "image",
+      "created_ts": 2000.0,
+      "modified_ts": 2000.0,
+      "taken_ts": 1000.0,
+      "taken": "2024-03-21 17:45:32",
+      "expected_issues": []
+    },
+    {
+      "name": "taken_after_created",
+      "path": "C:\\photos\\sample.jpg",
+      "media_type": "image",
+      "created_ts": 1000.0,
+      "modified_ts": 3000.0,
+      "taken_ts": 2000.0,
+      "taken": "2024-03-21 17:45:32",
+      "expected_issues": ["Taken > Created"]
+    },
+    {
+      "name": "taken_after_created_and_modified",
+      "path": "C:\\photos\\sample.jpg",
+      "media_type": "image",
+      "created_ts": 1000.0,
+      "modified_ts": 1500.0,
+      "taken_ts": 2000.0,
+      "taken": "2024-03-21 17:45:32",
+      "expected_issues": ["Taken > Created", "Taken > Modified"]
+    },
+    {
+      "name": "subsecond_differences_ignored",
+      "path": "C:\\photos\\sample.jpg",
+      "media_type": "image",
+      "created_ts": 1000.0,
+      "modified_ts": 1000.7,
+      "taken_ts": 1000.8,
+      "taken": "2024-03-21 17:45:32",
+      "expected_issues": []
+    }
+  ],
+  "selection_range_cases": [
+    {
+      "name": "forward_inclusive",
+      "items": ["a", "b", "c", "d", "e"],
+      "anchor": "b",
+      "target": "d",
+      "expected": ["b", "c", "d"]
+    },
+    {
+      "name": "backward_inclusive",
+      "items": ["a", "b", "c", "d", "e"],
+      "anchor": "d",
+      "target": "b",
+      "expected": ["b", "c", "d"]
+    },
+    {
+      "name": "missing_anchor_falls_back_to_target",
+      "items": ["a", "b", "c"],
+      "anchor": "missing",
+      "target": "b",
+      "expected": ["b"]
+    }
+  ],
+  "safety_invariants": {
+    "backup_default_enabled": true,
+    "backup_directory_name": ".photo-repair-backups",
+    "backup_overwrite_existing": false,
+    "audit_log_name": ".photo-repair-repair-log.csv",
+    "audit_log_columns": [
+      "logged_at",
+      "file",
+      "operation",
+      "before",
+      "after",
+      "backup",
+      "status"
+    ],
+    "preview_example_limit": 10,
+    "rescan_after_successful_repair": true,
+    "exif_only_repair_preserves_filesystem_times": true,
+    "reject_unreadable_existing_exif": true,
+    "exclude_backup_directory_from_scan": true
+  }
+}
