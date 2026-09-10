@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from tkinter import Menu, StringVar, Text, Tk, filedialog, messagebox, ttk
+from tkinter import BooleanVar, Menu, StringVar, Text, Tk, filedialog, messagebox, ttk
 from typing import Optional
 
 from .core import MediaRecord, format_size
@@ -39,6 +39,21 @@ SOURCE_LABELS = {
     "filename": "Filename date/time",
 }
 
+# Tk uses these modifier bits for mouse events on Windows.
+_SHIFT_MASK = 0x0001
+_CTRL_MASK = 0x0004
+
+
+def _selection_range(items: tuple[str, ...], anchor: str, target: str) -> tuple[str, ...]:
+    """Return the inclusive range between two Treeview item ids."""
+    if anchor not in items or target not in items:
+        return (target,) if target in items else ()
+    start = items.index(anchor)
+    end = items.index(target)
+    if start > end:
+        start, end = end, start
+    return items[start : end + 1]
+
 
 class PhotoRepairApp:
     def __init__(self, root: Tk) -> None:
@@ -60,6 +75,7 @@ class PhotoRepairApp:
         self._metadata_started_at: Optional[float] = None
         self._scan_completed = 0
         self._scan_total = 0
+        self._review_selection_anchor: Optional[str] = None
 
         self.status_var = StringVar(value="Choose a folder to inspect photo and media timestamps.")
         self.summary_var = StringVar(value="No collection loaded")
@@ -69,6 +85,7 @@ class PhotoRepairApp:
         self.media_filter_var = StringVar(value="All")
         self.issue_filter_var = StringVar(value=REVIEW_FILTERS[0])
         self.repair_method_var = StringVar(value=REPAIR_PLACEHOLDER)
+        self.backup_enabled_var = BooleanVar(value=True)
 
         self._configure_styles()
         self._build_ui()
@@ -106,12 +123,7 @@ class PhotoRepairApp:
         container.columnconfigure(0, weight=1)
         container.rowconfigure(3, weight=1)
 
-        header = ttk.Frame(
-            container,
-            padding=(16, 13),
-            relief="solid",
-            borderwidth=1,
-        )
+        header = ttk.Frame(container, padding=(16, 13), relief="solid", borderwidth=1)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         header.columnconfigure(0, weight=1)
 
@@ -132,7 +144,9 @@ class PhotoRepairApp:
             controls, text="Stop", command=self.stop_scan, state="disabled"
         )
         self.stop_button.grid(row=0, column=1, padx=(0, 18))
-        ttk.Separator(controls, orient="vertical").grid(row=0, column=2, sticky="ns", padx=(0, 18))
+        ttk.Separator(controls, orient="vertical").grid(
+            row=0, column=2, sticky="ns", padx=(0, 18)
+        )
         ttk.Label(controls, text="Media", style="Section.TLabel").grid(
             row=0, column=3, padx=(0, 6)
         )
@@ -146,12 +160,7 @@ class PhotoRepairApp:
         media_filter.grid(row=0, column=4)
         media_filter.bind("<<ComboboxSelected>>", lambda _: self._render())
 
-        summary_panel = ttk.Frame(
-            container,
-            padding=(13, 9),
-            relief="solid",
-            borderwidth=1,
-        )
+        summary_panel = ttk.Frame(container, padding=(13, 9), relief="solid", borderwidth=1)
         summary_panel.grid(row=1, column=0, sticky="ew", pady=(0, 9))
         summary_panel.columnconfigure(0, weight=1)
         ttk.Label(summary_panel, textvariable=self.summary_var, style="Summary.TLabel").grid(
@@ -218,7 +227,7 @@ class PhotoRepairApp:
         self.issue_tree = self._build_tree(
             review_tab, include_issues=True, row=1, checkboxes=True
         )
-        self.issue_tree.bind("<Button-1>", self._on_review_click, add="+")
+        self.issue_tree.bind("<Button-1>", self._on_review_click)
         self.issue_tree.bind("<<TreeviewSelect>>", self._sync_review_selection)
         self.issue_tree.bind("<space>", self._toggle_focused_review)
         self.issue_tree.bind("<Double-1>", lambda _: self._open_selected())
@@ -249,7 +258,7 @@ class PhotoRepairApp:
         )
         self.apply_button.grid(row=0, column=2, padx=(0, 18))
         ttk.Separator(repair_panel, orient="vertical").grid(
-            row=0, column=3, rowspan=2, sticky="ns", padx=(0, 14)
+            row=0, column=3, rowspan=3, sticky="ns", padx=(0, 14)
         )
         ttk.Button(repair_panel, text="Open file", command=self._open_selected).grid(
             row=0, column=4, padx=(0, 6)
@@ -257,11 +266,17 @@ class PhotoRepairApp:
         ttk.Button(repair_panel, text="Show in Explorer", command=self._reveal_selected).grid(
             row=0, column=5
         )
+        ttk.Checkbutton(
+            repair_panel,
+            text="Create backup before repair (recommended)",
+            variable=self.backup_enabled_var,
+            command=self._update_repair_state,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(
             repair_panel,
             textvariable=self.repair_summary_var,
             style="RepairHint.TLabel",
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         log_tab.columnconfigure(0, weight=1)
         log_tab.rowconfigure(0, weight=1)
@@ -290,7 +305,7 @@ class PhotoRepairApp:
         ttk.Label(
             footer,
             text=(
-                "Original files are backed up before repair. Every attempted change is recorded "
+                "Backups are optional and enabled by default. Every attempted change is recorded "
                 "in the CSV repair log."
             ),
             style="Footer.TLabel",
@@ -574,6 +589,7 @@ class PhotoRepairApp:
 
     def _render_issues(self) -> None:
         self.selected_review_paths.clear()
+        self._review_selection_anchor = None
         self.issue_tree.delete(*self.issue_tree.get_children())
         self.issue_map.clear()
         selected_issue = self.issue_filter_var.get()
@@ -604,18 +620,58 @@ class PhotoRepairApp:
         )
 
     def _on_review_click(self, event) -> Optional[str]:
+        """Implement predictable checkbox, Ctrl-click and Shift-click selection."""
         row = self.issue_tree.identify_row(event.y)
-        column = self.issue_tree.identify_column(event.x)
         if not row:
             return None
+
+        column = self.issue_tree.identify_column(event.x)
+        items = tuple(self.issue_tree.get_children())
+        selected = set(self.issue_tree.selection())
+        shift = bool(event.state & _SHIFT_MASK)
+        ctrl = bool(event.state & _CTRL_MASK)
+
         self.issue_tree.focus(row)
+
+        # Clicking the checkbox toggles exactly that row without disturbing the rest.
         if column == "#1":
-            if row in self.issue_tree.selection():
+            if row in selected:
                 self.issue_tree.selection_remove(row)
             else:
                 self.issue_tree.selection_add(row)
+            self._review_selection_anchor = row
+            self._sync_review_selection()
             return "break"
-        return None
+
+        # Explicitly implement range selection rather than relying on Tk's internal
+        # anchor, because our checkbox behaviour otherwise makes Shift-click erratic.
+        if shift:
+            anchor = self._review_selection_anchor
+            if anchor not in items:
+                current = self.issue_tree.selection()
+                anchor = current[0] if current else row
+            range_items = _selection_range(items, anchor, row)
+            if ctrl:
+                for item in range_items:
+                    self.issue_tree.selection_add(item)
+            else:
+                self.issue_tree.selection_set(range_items)
+            self._sync_review_selection()
+            return "break"
+
+        if ctrl:
+            if row in selected:
+                self.issue_tree.selection_remove(row)
+            else:
+                self.issue_tree.selection_add(row)
+            self._review_selection_anchor = row
+            self._sync_review_selection()
+            return "break"
+
+        self.issue_tree.selection_set(row)
+        self._review_selection_anchor = row
+        self._sync_review_selection()
+        return "break"
 
     def _toggle_focused_review(self, _event=None) -> str:
         row = self.issue_tree.focus()
@@ -624,6 +680,8 @@ class PhotoRepairApp:
                 self.issue_tree.selection_remove(row)
             else:
                 self.issue_tree.selection_add(row)
+            self._review_selection_anchor = row
+            self._sync_review_selection()
         return "break"
 
     def _sync_review_selection(self, _event=None) -> None:
@@ -652,33 +710,40 @@ class PhotoRepairApp:
         count = len(self.selected_review_paths)
         enabled = bool(count) and method is not None
         self.apply_button.configure(state="normal" if enabled else "disabled")
+        backup_note = "backup on" if self.backup_enabled_var.get() else "backup OFF"
 
         if method is None and count == 0:
-            self.repair_summary_var.set("Select files and choose a repair method.")
+            self.repair_summary_var.set(f"Select files and choose a repair method. {backup_note}.")
         elif method is None:
-            self.repair_summary_var.set(f"{count} selected. Choose the timestamp change to apply.")
+            self.repair_summary_var.set(
+                f"{count} selected. Choose the timestamp change to apply. {backup_note}."
+            )
         elif count == 0:
             target, source = method
             self.repair_summary_var.set(
-                f"Ready method: {TARGET_LABELS[target]} ← {SOURCE_LABELS[source]}. Select files to continue."
+                f"Ready method: {TARGET_LABELS[target]} ← {SOURCE_LABELS[source]}. "
+                f"Select files to continue. {backup_note}."
             )
         else:
             target, source = method
             noun = "file" if count == 1 else "files"
             self.repair_summary_var.set(
-                f"Ready: {TARGET_LABELS[target]} ← {SOURCE_LABELS[source]} for {count} {noun}."
+                f"Ready: {TARGET_LABELS[target]} ← {SOURCE_LABELS[source]} for {count} {noun}; "
+                f"{backup_note}."
             )
 
     def _select_all_issues(self) -> None:
         items = self.issue_tree.get_children()
         if items:
             self.issue_tree.selection_set(items)
+            self._review_selection_anchor = items[0]
             self._sync_review_selection()
 
     def _clear_review_selection(self) -> None:
         items = self.issue_tree.selection()
         if items:
             self.issue_tree.selection_remove(items)
+        self._review_selection_anchor = None
         self._sync_review_selection()
 
     def _show_context_menu(self, event, review: bool) -> None:
@@ -725,6 +790,7 @@ class PhotoRepairApp:
     def _add_review_item(self, item: str) -> None:
         self.issue_tree.selection_add(item)
         self.issue_tree.focus(item)
+        self._review_selection_anchor = item
         self._sync_review_selection()
 
     def _remove_review_item(self, item: str) -> None:
@@ -734,6 +800,7 @@ class PhotoRepairApp:
     def _select_only_review_item(self, item: str) -> None:
         self.issue_tree.selection_set(item)
         self.issue_tree.focus(item)
+        self._review_selection_anchor = item
         self._sync_review_selection()
 
     def _selected_record(self) -> Optional[MediaRecord]:
@@ -840,6 +907,7 @@ class PhotoRepairApp:
 
         target_label = TARGET_LABELS[target]
         source_label = SOURCE_LABELS[source]
+        create_backup = self.backup_enabled_var.get()
         lines = [
             "You are about to modify file timestamps.",
             "",
@@ -859,16 +927,24 @@ class PhotoRepairApp:
         if len(changes) > 4:
             lines.append(f"• …and {len(changes) - 4} more")
 
+        lines.extend(["", "Each changed file is modified in place."])
+        if create_backup:
+            lines.append("Backup: ON. The original is saved under .photo-repair-backups before writing.")
+        else:
+            lines.extend(
+                [
+                    "BACKUP: OFF.",
+                    "No recovery copy will be created by this application before these files are changed.",
+                ]
+            )
         lines.extend(
             [
-                "",
-                "Each changed file is modified in place.",
-                "An original copy is saved under .photo-repair-backups before writing.",
                 "Every attempted change is recorded in the CSV repair log.",
                 "",
                 "Continue?",
             ]
         )
+
         confirmed = messagebox.askyesno(
             "Confirm timestamp repair",
             "\n".join(lines),
@@ -883,7 +959,12 @@ class PhotoRepairApp:
         replacements: dict[str, MediaRecord] = {}
         for record, _, _ in changes:
             try:
-                self.repair_service.apply(record, target, source)
+                self.repair_service.apply(
+                    record,
+                    target,
+                    source,
+                    create_backup=create_backup,
+                )
                 replacements[record.path] = scan_file(Path(record.path))
                 successes += 1
             except Exception as exc:
@@ -896,17 +977,21 @@ class PhotoRepairApp:
         self._load_log()
 
         skipped_count = len(unchanged) + len(unavailable)
+        backup_suffix = "" if create_backup else " No backups were created."
         if failures:
             preview = "\n".join(failures[:6])
             if len(failures) > 6:
                 preview += f"\n…and {len(failures) - 6} more."
             messagebox.showwarning(
                 "Repair completed with errors",
-                f"Updated {successes} file(s). Skipped {skipped_count}.\n\n{preview}",
+                f"Updated {successes} file(s). Skipped {skipped_count}.{backup_suffix}\n\n{preview}",
             )
         else:
-            suffix = f" Skipped {skipped_count}." if skipped_count else ""
-            messagebox.showinfo("Repair complete", f"Updated {successes} file(s).{suffix}")
+            skipped_suffix = f" Skipped {skipped_count}." if skipped_count else ""
+            messagebox.showinfo(
+                "Repair complete",
+                f"Updated {successes} file(s).{skipped_suffix}{backup_suffix}",
+            )
 
     def _load_log(self) -> None:
         self.log_text.configure(state="normal")
