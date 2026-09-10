@@ -78,7 +78,7 @@ Repairs always modify the selected file in place. By default, the application fi
 .photo-repair-backups/
 ```
 
-inside the scanned folder. Existing backups are not overwritten, so the first pre-repair original remains available even if the same file is repaired again later.
+inside the scanned folder. Existing backups are not overwritten. The backup therefore represents the first pre-repair original, not a new snapshot before every subsequent repair of the same file.
 
 Backup creation can be disabled for users who explicitly want an in-place change without a recovery copy. When backup is disabled, the preview dialog clearly states that no recovery copy will be created by the application.
 
