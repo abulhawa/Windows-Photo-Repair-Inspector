@@ -175,22 +175,30 @@ def derive_proposed_taken(created: str, filename_date: str, taken: str) -> Optio
     return filename_date if filename_date[11:] != "00:00:00" else created
 
 
-def _is_later(left: float, right: float) -> bool:
-    """Return True only when left is meaningfully later at displayed precision."""
-    return left - right >= _TIMESTAMP_TOLERANCE_SECONDS
-
-
 def detect_issues(record: MediaRecord) -> tuple[str, ...]:
+    """Return conditions worth reviewing, not every normal timestamp ordering.
+
+    Windows creation time describes when the current filesystem object was created,
+    not necessarily when the photo was captured. A later modification time is normal
+    after editing, while creation later than modification is common after copying a
+    file with its original modification time preserved. Likewise, Taken < Created is
+    expected after importing an older photo onto a newer filesystem.
+    """
     issues: list[str] = []
-    if not record.taken and record.media_type == "image":
+    suffix = Path(record.path).suffix.lower()
+
+    # Missing capture metadata is only actionable where this application can write it.
+    if (
+        not record.taken
+        and record.media_type == "image"
+        and suffix in WRITABLE_TAKEN_EXTENSIONS
+    ):
         issues.append("Missing Taken At")
-    if _is_later(record.modified_ts, record.created_ts):
-        issues.append("Modified > Created")
-    elif _is_later(record.created_ts, record.modified_ts):
-        issues.append("Created > Modified")
+
     if record.taken_ts is not None:
-        if _is_later(record.taken_ts, record.created_ts):
+        if record.taken_ts > record.created_ts + _TIMESTAMP_TOLERANCE_SECONDS:
             issues.append("Taken > Created")
-        elif _is_later(record.created_ts, record.taken_ts):
-            issues.append("Taken < Created")
+        if record.taken_ts > record.modified_ts + _TIMESTAMP_TOLERANCE_SECONDS:
+            issues.append("Taken > Modified")
+
     return tuple(issues)
