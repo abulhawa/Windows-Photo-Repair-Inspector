@@ -14,7 +14,7 @@ def make_record(**overrides):
         modified="2024-01-03 10:00:00",
         taken="2024-01-01 09:00:00",
         filename_date="2024-01-01 09:00:00",
-        path=r"C:\\Pictures\\Trips\\Example Photo.jpg",
+        path="Pictures/Trips/Example Photo.jpg",
         media_type="image",
         created_ts=created_ts,
         modified_ts=modified_ts,
