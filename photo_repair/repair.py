@@ -1,4 +1,4 @@
-"""Safe timestamp repair operations with backups and audit logging."""
+"""Timestamp repair operations with optional backups and audit logging."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .windows import set_file_times
 
 
 class RepairService:
-    """Apply repairs only after preserving an original copy of each file."""
+    """Preview and apply timestamp repairs with an audit trail."""
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -55,8 +55,6 @@ class RepairService:
             stats = path.stat()
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, backup)
-            # copy2 preserves modified/access metadata, but Windows creation time is
-            # not guaranteed to survive a copy. Restore all three explicitly.
             set_file_times(
                 backup,
                 created_ts=stats.st_ctime,
@@ -94,8 +92,20 @@ class RepairService:
                 ]
             )
 
-    def apply(self, record: MediaRecord, target: str, source: str) -> None:
-        """Copy the original once, then apply one timestamp repair."""
+    def apply(
+        self,
+        record: MediaRecord,
+        target: str,
+        source: str,
+        *,
+        create_backup: bool = True,
+    ) -> None:
+        """Apply one repair, optionally preserving the original first.
+
+        Backup creation defaults to True. Callers that disable it are intentionally
+        choosing an in-place change with no recovery copy created by this utility.
+        Every attempt is logged either way.
+        """
         path = Path(record.path)
         if not path.exists():
             raise FileNotFoundError(f"{path} does not exist.")
@@ -107,15 +117,17 @@ class RepairService:
         backup: Path | None = None
         try:
             original_stats = path.stat()
-            backup = self.backup_file(path)
+            if create_backup:
+                backup = self.backup_file(path)
+
             if target == "created":
                 set_file_times(path, created_ts=timestamp)
             elif target == "modified":
                 set_file_times(path, modified_ts=timestamp)
             elif target == "taken":
                 write_taken_metadata(path, timestamp)
-                # Metadata insertion writes the file and would otherwise change its
-                # filesystem timestamps. Keep an EXIF-only repair EXIF-only.
+                # EXIF insertion writes the file. Keep an EXIF-only repair from
+                # changing the Windows filesystem timestamps as a side effect.
                 set_file_times(
                     path,
                     created_ts=record.created_ts,
@@ -125,13 +137,14 @@ class RepairService:
             else:
                 raise ValueError(f"Unknown repair target: {target}")
         except Exception as exc:
+            backup_note = "" if create_backup else " (no backup)"
             self._append_log(
                 path=path,
                 operation=operation,
                 before=before,
                 after=after,
                 backup=backup,
-                status=f"ERROR: {exc}",
+                status=f"ERROR{backup_note}: {exc}",
             )
             raise
 
@@ -141,5 +154,5 @@ class RepairService:
             before=before,
             after=after,
             backup=backup,
-            status="OK",
+            status="OK" if create_backup else "OK (no backup)",
         )
