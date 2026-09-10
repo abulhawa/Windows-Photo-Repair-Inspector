@@ -2,7 +2,7 @@
 
 A Windows desktop utility for inspecting inconsistent photo and media timestamps and repairing them with explicit backups and an audit trail.
 
-Photo collections copied between computers, restored from backups, downloaded from social platforms, or migrated between services often end up with conflicting dates. The filesystem may say one thing, EXIF metadata another, while the original filename still contains the capture date. This tool puts those signals side by side, flags suspicious inconsistencies, and provides controlled repair actions.
+Photo collections copied between computers, restored from backups, downloaded from social platforms, or migrated between services often end up with conflicting dates. The filesystem may say one thing, EXIF metadata another, while the original filename still contains the capture date. This tool puts those signals side by side, identifies conditions worth reviewing, and provides controlled repair actions.
 
 ## What it inspects
 
@@ -13,13 +13,15 @@ For each supported media file the application compares:
 - EXIF **Taken At** timestamp when available
 - Capture timestamps inferred from common camera, phone, screenshot, and social-media filenames
 
-The **Issues** view highlights cases such as:
+The **Review** view is deliberately conservative. It currently highlights:
 
-- missing EXIF `Taken At`
-- `Modified > Created`
-- `Created > Modified`
+- missing EXIF `Taken At` on JPEG files, where the application can actually repair it
 - `Taken > Created`
-- `Taken < Created`
+- `Taken > Modified`
+
+Normal filesystem ordering is not treated as an error. `Modified > Created` is expected after editing a file. `Created > Modified` is common after copying a file while preserving its older modification timestamp, and `Taken < Created` is normal when an older photo is imported onto a newer filesystem.
+
+Timestamp comparisons use a one-second tolerance so sub-second filesystem precision does not create review items that appear identical in the UI.
 
 ## Repair safety
 
@@ -103,12 +105,13 @@ python -m pip install -r requirements.txt
 ## Workflow
 
 1. Click **Scan Folder…** and select a media collection.
-2. Review all detected files in **Library**.
-3. Open **Issues** and optionally filter by inconsistency type.
-4. Select one or more rows.
-5. Choose a repair such as `Created = Taken`, `Taken = Filename`, or `Modified = Filename`.
-6. Confirm the operation. Original files are backed up before writes.
-7. Review the resulting CSV audit trail under **Repair Log**.
+2. Browse all detected files in **Library**.
+3. Open **Review** to see only conditions worth checking or repairing.
+4. Filter the review list if needed.
+5. Select one or more rows.
+6. Choose a grouped repair action such as **Set Taken At > From filename** or **Set Created > From Taken At**.
+7. Confirm the operation. Original files are backed up before writes.
+8. Review the resulting CSV audit trail under **Repair Log**.
 
 ## Project structure
 
@@ -117,7 +120,7 @@ python -m pip install -r requirements.txt
 ├── main.py                 # small application entry point
 ├── photo_repair/
 │   ├── app.py              # Tkinter UI and scan orchestration
-│   ├── core.py             # timestamp parsing and issue detection
+│   ├── core.py             # timestamp parsing and review detection
 │   ├── metadata.py         # EXIF reading/writing
 │   ├── repair.py           # backup, repair and audit-log service
 │   ├── scanner.py          # media scanning
@@ -131,7 +134,7 @@ python -m pip install -r requirements.txt
 └── requirements.txt
 ```
 
-The parsing and issue-detection logic is kept independent of Tkinter and Windows APIs so it can be unit tested directly.
+The parsing and review logic is kept independent of Tkinter and Windows APIs so it can be unit tested directly.
 
 ## Tests
 
