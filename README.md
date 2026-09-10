@@ -37,16 +37,19 @@ Stopping a metadata scan cancels queued work and allows currently active metadat
 
 ## Repair workflow
 
-Repair selection is explicit and does not depend on knowing Windows multi-select shortcuts. The **Review** table has a checkbox column for choosing which files belong to the repair batch, together with **Select all visible** and **Clear selection** controls.
+The **Review** table supports both explicit checkboxes and normal Windows multi-selection. Checkbox clicks, Ctrl-click, Shift-click, **Select all**, and **Clear selection** all operate on the same repair selection.
+
+Each file also has a right-click menu with context actions such as adding/removing it from the repair selection, selecting only that file, opening it, showing it in Explorer, and copying its full path.
 
 After selecting files:
 
 1. Choose a repair method from the **Repair method** dropdown.
-2. Review the selected-file count.
+2. Review the visible action summary and selected-file count.
 3. Press **Apply repair**.
-4. Confirm the operation before any file is changed.
+4. Review the warning dialog showing the target field, source field, number of files that will change, skipped files, and several before → after examples.
+5. Confirm before any file is changed.
 
-The Apply button remains disabled until both a repair method and at least one file have been selected.
+The Apply button remains disabled until both a repair method and at least one file have been selected. Files that already match the requested value or cannot provide the selected source timestamp are skipped rather than modified unnecessarily.
 
 ## Repair safety
 
@@ -134,10 +137,11 @@ python -m pip install -r requirements.txt
 3. Browse all detected files in **Library**.
 4. Open **Review** to see only conditions worth checking or repairing.
 5. Filter the review list if needed.
-6. Select files using the checkbox column, or use **Select all visible**.
-7. Choose a repair method from the dropdown.
-8. Press **Apply repair** and confirm the operation.
-9. Review the resulting CSV audit trail under **Repair Log**.
+6. Select files using checkboxes, Ctrl-click, Shift-click, or **Select all**.
+7. Right-click a file for per-file context actions when needed.
+8. Choose a repair method from the dropdown.
+9. Press **Apply repair**, review the before/after confirmation, and explicitly confirm the write.
+10. Review the resulting CSV audit trail under **Repair Log**.
 
 ## Project structure
 
@@ -148,12 +152,13 @@ python -m pip install -r requirements.txt
 │   ├── app.py              # Tkinter UI and scan orchestration
 │   ├── core.py             # timestamp parsing and review detection
 │   ├── metadata.py         # EXIF reading/writing
-│   ├── repair.py           # backup, repair and audit-log service
+│   ├── repair.py           # backup, preview, repair and audit-log service
 │   ├── scanner.py          # concurrent, cancellable media scanning
 │   └── windows.py          # Windows FILETIME operations
 ├── tests/
 │   ├── test_core.py
 │   ├── test_metadata.py
+│   ├── test_repair_preview.py
 │   └── test_scanner.py
 ├── .github/workflows/
 │   └── tests.yml
