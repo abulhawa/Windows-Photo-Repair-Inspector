@@ -1,6 +1,6 @@
 # Photo Metadata Repair Inspector
 
-A Windows desktop utility for inspecting inconsistent photo and media timestamps and repairing them with explicit backups and an audit trail.
+A Windows desktop utility for inspecting inconsistent photo and media timestamps and repairing them with explicit confirmation, optional backups, and an audit trail.
 
 Photo collections copied between computers, restored from backups, downloaded from social platforms, or migrated between services often end up with conflicting dates. The filesystem may say one thing, EXIF metadata another, while the original filename still contains the capture date. This tool puts those signals side by side, identifies conditions worth reviewing, and provides controlled repair actions.
 
@@ -37,23 +37,24 @@ Stopping a metadata scan cancels queued work and allows currently active metadat
 
 ## Repair workflow
 
-The **Review** table supports both explicit checkboxes and normal Windows multi-selection. Checkbox clicks, Ctrl-click, Shift-click, **Select all**, and **Clear selection** all operate on the same repair selection.
+The **Review** table supports both explicit checkboxes and normal Windows multi-selection. Checkbox clicks, Ctrl-click, Shift-click, **Select all**, and **Clear selection** all operate on the same repair selection. Shift-click range selection uses the first selected anchor and then selects the inclusive range to the clicked row.
 
 Each file also has a right-click menu with context actions such as adding/removing it from the repair selection, selecting only that file, opening it, showing it in Explorer, and copying its full path.
 
 After selecting files:
 
 1. Choose a repair method from the **Repair method** dropdown.
-2. Review the visible action summary and selected-file count.
-3. Press **Apply repair**.
-4. Review the warning dialog showing the target field, source field, number of files that will change, skipped files, and several before → after examples.
-5. Confirm before any file is changed.
+2. Decide whether to keep **Create backup before repair** enabled. It is enabled by default.
+3. Review the visible action summary and selected-file count.
+4. Press **Apply repair**.
+5. Review the warning dialog showing the target field, source field, number of files that will change, skipped files, before → after examples, and backup status.
+6. Confirm before any file is changed.
 
 The Apply button remains disabled until both a repair method and at least one file have been selected. Files that already match the requested value or cannot provide the selected source timestamp are skipped rather than modified unnecessarily.
 
 ## Repair safety
 
-Repairs modify the selected file in place, but the application first preserves the original under:
+Repairs always modify the selected file in place. By default, the application first preserves the original under:
 
 ```text
 .photo-repair-backups/
@@ -61,17 +62,19 @@ Repairs modify the selected file in place, but the application first preserves t
 
 inside the scanned folder. Existing backups are not overwritten, so the first-seen original remains available.
 
-Every attempted repair is also appended to:
+Backup creation can be disabled in the repair panel for users who explicitly want an in-place overwrite without creating a recovery copy. When backup is disabled, the confirmation dialog states that no recovery copy will be created by the application.
+
+Every attempted repair is appended to:
 
 ```text
 .photo-repair-repair-log.csv
 ```
 
-with the file path, operation, before/after values, backup location, and status.
+with the file path, operation, before/after values, backup location when applicable, and status. Repairs performed without a backup are marked accordingly in the log.
 
 EXIF writes are deliberately conservative. If existing EXIF metadata cannot be parsed safely, the application refuses the write rather than replacing the metadata with a new empty EXIF block. EXIF-only repairs also restore the original filesystem Created, Modified, and Accessed timestamps after the metadata write.
 
-> Keep an independent backup of important photo collections. This utility changes file metadata and filesystem timestamps by design.
+> Keep an independent backup of important photo collections. Disabling the built-in backup removes the application's recovery copy for that repair.
 
 ## Supported media
 
@@ -139,8 +142,8 @@ python -m pip install -r requirements.txt
 5. Filter the review list if needed.
 6. Select files using checkboxes, Ctrl-click, Shift-click, or **Select all**.
 7. Right-click a file for per-file context actions when needed.
-8. Choose a repair method from the dropdown.
-9. Press **Apply repair**, review the before/after confirmation, and explicitly confirm the write.
+8. Choose a repair method and choose whether a backup should be created.
+9. Press **Apply repair**, review the before/after confirmation and backup status, and explicitly confirm the write.
 10. Review the resulting CSV audit trail under **Repair Log**.
 
 ## Project structure
@@ -158,8 +161,10 @@ python -m pip install -r requirements.txt
 ├── tests/
 │   ├── test_core.py
 │   ├── test_metadata.py
+│   ├── test_optional_backup.py
 │   ├── test_repair_preview.py
-│   └── test_scanner.py
+│   ├── test_scanner.py
+│   └── test_selection.py
 ├── .github/workflows/
 │   └── tests.yml
 ├── pyproject.toml
@@ -186,3 +191,4 @@ GitHub Actions runs the test suite on both Windows and Linux and also compiles t
 - RAW camera formats are not currently supported.
 - The tool does not infer timezone offsets that are absent from source metadata.
 - Backups can consume significant disk space when many large files are repaired.
+- If backup creation is disabled, the application does not create a recovery copy for that repair.
