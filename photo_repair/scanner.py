@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .core import (
     MediaRecord,
@@ -18,6 +20,7 @@ from .core import (
 from .metadata import get_exif_taken_date
 
 _BACKUP_DIR_NAME = ".photo-repair-backups"
+_MAX_SCAN_WORKERS = 8
 
 
 def scan_file(path: Path) -> MediaRecord:
@@ -59,11 +62,38 @@ def iter_scannable_paths(root: Path) -> Iterable[Path]:
         yield path
 
 
+def _safe_scan_file(path: Path) -> Optional[MediaRecord]:
+    """Scan one file while isolating ordinary per-file read failures."""
+    try:
+        return scan_file(path)
+    except (OSError, ValueError):
+        return None
+
+
+def _scan_worker_count(file_count: int) -> int:
+    """Choose a conservative number of workers for metadata-heavy I/O."""
+    if file_count <= 1:
+        return 1
+    cpu_hint = os.cpu_count() or 2
+    return min(_MAX_SCAN_WORKERS, file_count, max(2, cpu_hint))
+
+
 def scan_directory(root: Path) -> list[MediaRecord]:
-    records: list[MediaRecord] = []
-    for path in iter_scannable_paths(root):
-        try:
-            records.append(scan_file(path))
-        except (OSError, ValueError):
-            continue
-    return records
+    """Scan media metadata concurrently while preserving discovery order.
+
+    Image inspection is dominated by short filesystem and metadata reads rather
+    than CPU-heavy image decoding. A bounded thread pool allows those reads to
+    overlap on modern storage without spawning an excessive number of workers.
+    """
+    paths = list(iter_scannable_paths(root))
+    if not paths:
+        return []
+
+    workers = _scan_worker_count(len(paths))
+    if workers == 1:
+        record = _safe_scan_file(paths[0])
+        return [record] if record is not None else []
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="photo-scan") as executor:
+        results = executor.map(_safe_scan_file, paths)
+        return [record for record in results if record is not None]
