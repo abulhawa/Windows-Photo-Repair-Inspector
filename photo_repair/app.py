@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from tkinter import Menu, StringVar, Text, Tk, filedialog, messagebox, ttk
 from typing import Optional
@@ -34,16 +35,24 @@ class PhotoRepairApp:
         self.issue_map: dict[str, MediaRecord] = {}
         self.scan_root: Optional[Path] = None
         self.repair_service: Optional[RepairService] = None
+
         self._scan_generation = 0
+        self._scan_cancel_event: Optional[threading.Event] = None
+        self._scan_started_at: Optional[float] = None
+        self._metadata_started_at: Optional[float] = None
+        self._scan_completed = 0
+        self._scan_total = 0
 
         self.status_var = StringVar(value="Choose a folder to inspect photo and media timestamps.")
         self.summary_var = StringVar(value="No collection loaded")
+        self.scan_progress_var = StringVar(value="")
         self.selection_var = StringVar(value="No files selected")
         self.media_filter_var = StringVar(value="All")
         self.issue_filter_var = StringVar(value=REVIEW_FILTERS[0])
 
         self._configure_styles()
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
@@ -64,6 +73,7 @@ class PhotoRepairApp:
         style.configure("Title.TLabel", font=("Segoe UI Semibold", 17))
         style.configure("Subtitle.TLabel", font=("Segoe UI", 9))
         style.configure("Summary.TLabel", font=("Segoe UI Semibold", 10))
+        style.configure("ProgressText.TLabel", font=("Segoe UI", 9))
         style.configure("Section.TLabel", font=("Segoe UI Semibold", 10))
         style.configure("Footer.TLabel", font=("Segoe UI", 9))
 
@@ -94,10 +104,22 @@ class PhotoRepairApp:
 
         controls = ttk.Frame(header)
         controls.grid(row=0, column=1, rowspan=2, sticky="e")
-        ttk.Button(controls, text="Scan Folder…", command=self.request_directory).grid(
-            row=0, column=0, padx=(0, 14)
+        self.scan_button = ttk.Button(
+            controls,
+            text="Scan Folder…",
+            command=self.request_directory,
         )
-        ttk.Label(controls, text="Media").grid(row=0, column=1, padx=(0, 6))
+        self.scan_button.grid(row=0, column=0, padx=(0, 6))
+
+        self.stop_button = ttk.Button(
+            controls,
+            text="Stop",
+            command=self.stop_scan,
+            state="disabled",
+        )
+        self.stop_button.grid(row=0, column=1, padx=(0, 14))
+
+        ttk.Label(controls, text="Media").grid(row=0, column=2, padx=(0, 6))
         media_filter = ttk.Combobox(
             controls,
             textvariable=self.media_filter_var,
@@ -105,14 +127,20 @@ class PhotoRepairApp:
             width=10,
             state="readonly",
         )
-        media_filter.grid(row=0, column=2)
+        media_filter.grid(row=0, column=3)
         media_filter.bind("<<ComboboxSelected>>", lambda _: self._render())
 
         summary_bar = ttk.Frame(container, padding=(0, 2, 0, 2))
         summary_bar.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        summary_bar.columnconfigure(0, weight=1)
         ttk.Label(summary_bar, textvariable=self.summary_var, style="Summary.TLabel").grid(
             row=0, column=0, sticky="w"
         )
+        ttk.Label(
+            summary_bar,
+            textvariable=self.scan_progress_var,
+            style="ProgressText.TLabel",
+        ).grid(row=0, column=1, sticky="e")
 
         self.progress = ttk.Progressbar(container, mode="indeterminate")
         self.progress.grid(row=2, column=0, sticky="ew", pady=(0, 8))
@@ -310,6 +338,9 @@ class PhotoRepairApp:
         return tree
 
     def request_directory(self) -> None:
+        if self._scan_cancel_event is not None:
+            return
+
         directory = filedialog.askdirectory()
         if not directory:
             return
@@ -320,31 +351,175 @@ class PhotoRepairApp:
 
         self._scan_generation += 1
         generation = self._scan_generation
+        cancel_event = threading.Event()
+        self._scan_cancel_event = cancel_event
+        self._scan_started_at = time.perf_counter()
+        self._metadata_started_at = None
+        self._scan_completed = 0
+        self._scan_total = 0
+
+        self.scan_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
         self.status_var.set(f"Scanning {root}")
-        self.summary_var.set("Scanning collection…")
+        self.summary_var.set("Discovering supported media files…")
+        self.scan_progress_var.set("Discovering files")
+        self.progress.configure(mode="indeterminate", maximum=100, value=0)
         self.progress.grid()
-        self.progress.start(10)
+        self.progress.start(12)
+
         threading.Thread(
             target=self._scan_worker,
-            args=(generation, root),
+            args=(generation, root, cancel_event),
             daemon=True,
+            name="photo-scan-controller",
         ).start()
 
-    def _scan_worker(self, generation: int, root: Path) -> None:
-        records = scan_directory(root)
-        self.root.after(0, lambda: self._finish_scan(generation, root, records))
+    def stop_scan(self) -> None:
+        cancel_event = self._scan_cancel_event
+        if cancel_event is None or cancel_event.is_set():
+            return
+        cancel_event.set()
+        self.stop_button.configure(state="disabled")
+        self.status_var.set("Stopping scan…")
+        if self._scan_total:
+            self.scan_progress_var.set(
+                f"{self._scan_completed:,} / {self._scan_total:,}  ·  stopping…"
+            )
+        else:
+            self.scan_progress_var.set("Stopping discovery…")
 
-    def _finish_scan(self, generation: int, root: Path, records: list[MediaRecord]) -> None:
+    def _scan_worker(
+        self,
+        generation: int,
+        root: Path,
+        cancel_event: threading.Event,
+    ) -> None:
+        def report_progress(completed: int, total: int) -> None:
+            try:
+                self.root.after(
+                    0,
+                    lambda c=completed, t=total: self._update_scan_progress(
+                        generation, c, t
+                    ),
+                )
+            except RuntimeError:
+                pass
+
+        records = scan_directory(
+            root,
+            cancel_event=cancel_event,
+            progress_callback=report_progress,
+        )
+        cancelled = cancel_event.is_set()
+        try:
+            self.root.after(
+                0,
+                lambda: self._finish_scan(
+                    generation,
+                    root,
+                    records,
+                    cancelled,
+                ),
+            )
+        except RuntimeError:
+            pass
+
+    def _update_scan_progress(self, generation: int, completed: int, total: int) -> None:
         if generation != self._scan_generation:
             return
+
+        self._scan_completed = completed
+        self._scan_total = total
+
+        if completed == 0:
+            self.progress.stop()
+            self.progress.configure(
+                mode="determinate",
+                maximum=max(total, 1),
+                value=0,
+            )
+            self._metadata_started_at = time.perf_counter()
+            if total:
+                self.summary_var.set(f"Found {total:,} supported media files. Reading metadata…")
+                self.scan_progress_var.set(f"0 / {total:,}  ·  starting metadata scan")
+            else:
+                self.summary_var.set("No supported media files found")
+                self.scan_progress_var.set("")
+            return
+
+        self.progress.configure(value=completed)
+        percent = (completed / total * 100.0) if total else 100.0
+        parts = [f"{completed:,} / {total:,}", f"{percent:.0f}%"]
+
+        if self._metadata_started_at is not None:
+            elapsed = max(0.0, time.perf_counter() - self._metadata_started_at)
+            parts.append(f"elapsed {self._format_duration(elapsed)}")
+            if completed >= 3 and elapsed >= 0.25 and completed < total:
+                rate = completed / elapsed
+                if rate > 0:
+                    remaining = (total - completed) / rate
+                    parts.append(f"~{self._format_duration(remaining)} remaining")
+
+        cancel_event = self._scan_cancel_event
+        if cancel_event is not None and cancel_event.is_set():
+            parts.append("stopping…")
+        self.scan_progress_var.set("  ·  ".join(parts))
+
+    def _finish_scan(
+        self,
+        generation: int,
+        root: Path,
+        records: list[MediaRecord],
+        cancelled: bool,
+    ) -> None:
+        if generation != self._scan_generation:
+            return
+
         self.progress.stop()
         self.progress.grid_remove()
+        self.scan_button.configure(state="normal")
+        self.stop_button.configure(state="disabled")
+        self._scan_cancel_event = None
+
+        elapsed = 0.0
+        if self._scan_started_at is not None:
+            elapsed = max(0.0, time.perf_counter() - self._scan_started_at)
+
+        if cancelled and not records:
+            self.status_var.set("Scan stopped before metadata processing completed. Previous results kept.")
+            self.scan_progress_var.set(f"Stopped after {self._format_duration(elapsed)}")
+            return
+
         self.scan_root = root
         self.repair_service = RepairService(root)
         self.records = records
-        self.status_var.set(str(root))
         self._render()
         self._load_log()
+
+        if cancelled:
+            total = self._scan_total
+            completed = self._scan_completed
+            self.status_var.set(f"Scan stopped. Partial results from {root}")
+            if total:
+                self.scan_progress_var.set(
+                    f"Stopped at {completed:,} / {total:,}  ·  {self._format_duration(elapsed)} elapsed"
+                )
+            else:
+                self.scan_progress_var.set(f"Stopped after {self._format_duration(elapsed)}")
+        else:
+            self.status_var.set(str(root))
+            self.scan_progress_var.set(
+                f"Scan complete  ·  {self._format_duration(elapsed)}"
+            )
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total_seconds = max(0, int(round(seconds)))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes}:{secs:02d}"
 
     def _media_matches(self, record: MediaRecord) -> bool:
         selected = self.media_filter_var.get()
@@ -502,6 +677,11 @@ class PhotoRepairApp:
             except OSError as exc:
                 self.log_text.insert("end", f"Could not read repair log: {exc}\n")
         self.log_text.configure(state="disabled")
+
+    def _on_close(self) -> None:
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        self.root.destroy()
 
 
 def main() -> None:
