@@ -125,30 +125,29 @@ Requirements:
 - Windows 10 or 11
 - Python 3.10+
 
-Clone the repository and install it in editable mode:
+Using `uv` is the recommended development setup:
 
 ```bash
 git clone https://github.com/abulhawa/Windows-Photo-Repair-Inspector.git
 cd Windows-Photo-Repair-Inspector
-python -m pip install -e .
+uv sync
+uv run python main.py
 ```
 
-Run it with either:
+`uv sync` installs the application dependencies and the default `dev` dependency group, including pytest.
+
+A plain pip installation remains supported for running the application:
 
 ```bash
+python -m pip install -e .
 python main.py
 ```
 
 or:
 
 ```bash
-photo-repair-inspector
-```
-
-A plain requirements file is also included:
-
-```bash
 python -m pip install -r requirements.txt
+python main.py
 ```
 
 ## Project structure
@@ -182,10 +181,24 @@ The parsing, selection-range, search, and sort logic are kept testable independe
 
 ## Tests
 
-Install development dependencies and run:
+With `uv`, development dependencies are installed by default:
 
 ```bash
-python -m pip install -e ".[dev]"
+uv sync
+uv run pytest
+```
+
+To verify that an existing lockfile still matches `pyproject.toml`:
+
+```bash
+uv lock --check
+```
+
+A pip-only test environment can also be created explicitly:
+
+```bash
+python -m pip install -e .
+python -m pip install "pytest>=8.0"
 python -m pytest
 ```
 

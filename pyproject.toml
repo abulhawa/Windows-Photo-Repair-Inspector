@@ -14,8 +14,10 @@ dependencies = [
   "pillow-heif>=0.18",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0"]
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+]
 
 [project.scripts]
 photo-repair-inspector = "photo_repair.app:main"
