@@ -86,12 +86,12 @@ public sealed class RepairServiceTests : IDisposable
     public void TakenRepairRestoresAllFilesystemTimesEvenIfWriterTouchesThem()
     {
         string path = Make();
-        DateTime created = File.GetCreationTimeUtc(path);
-        DateTime modified = File.GetLastWriteTimeUtc(path);
-        DateTime accessed = File.GetLastAccessTimeUtc(path);
         var reader = new MetadataReader();
         var service = new RepairService(root, reader, new TouchingTakenWriter());
         var plan = RepairPlanner.Plan(reader.ReadFile(path), RepairPlanner.FindMethod("taken:filename"));
+        DateTime created = File.GetCreationTimeUtc(path);
+        DateTime modified = File.GetLastWriteTimeUtc(path);
+        DateTime accessed = File.GetLastAccessTimeUtc(path);
 
         var result = service.Apply(plan, createBackup: false);
 
@@ -99,6 +99,30 @@ public sealed class RepairServiceTests : IDisposable
         Assert.Equal(created, File.GetCreationTimeUtc(path));
         Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
         Assert.Equal(accessed, File.GetLastAccessTimeUtc(path));
+    }
+
+    [Fact]
+    public void MissingTakenIsAddedWithoutChangingJpegScanData()
+    {
+        string path = Path.Combine(root, "IMG_20240321_174532.jpg");
+        File.Copy(Path.Combine(AppContext.BaseDirectory, "Fixtures", "empty.jpg"), path);
+        File.SetCreationTime(path, new DateTime(2024, 3, 21, 18, 0, 0));
+        File.SetLastWriteTime(path, new DateTime(2024, 3, 21, 19, 0, 0));
+        var reader = new MetadataReader();
+        var plan = RepairPlanner.Plan(reader.ReadFile(path), RepairPlanner.FindMethod("taken:filename"));
+        byte[] beforeScanData = FromStartOfScan(File.ReadAllBytes(path));
+        DateTime created = File.GetCreationTimeUtc(path);
+        DateTime modified = File.GetLastWriteTimeUtc(path);
+        DateTime accessed = File.GetLastAccessTimeUtc(path);
+
+        var result = new RepairService(root, reader).Apply(plan, createBackup: false);
+
+        Assert.True(result.Success, result.Status);
+        Assert.Equal(created, File.GetCreationTimeUtc(path));
+        Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
+        Assert.Equal(accessed, File.GetLastAccessTimeUtc(path));
+        Assert.Equal("2024-03-21 17:45:32", reader.ReadTaken(path));
+        Assert.Equal(beforeScanData, FromStartOfScan(File.ReadAllBytes(path)));
     }
 
     [Fact]
@@ -114,6 +138,14 @@ public sealed class RepairServiceTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Contains("changed since the preview", result.Status);
+    }
+
+    private static byte[] FromStartOfScan(byte[] jpeg)
+    {
+        for (int i = 0; i < jpeg.Length - 1; i++)
+            if (jpeg[i] == 0xFF && jpeg[i + 1] == 0xDA)
+                return jpeg[i..];
+        throw new Xunit.Sdk.XunitException("JPEG fixture has no start-of-scan marker.");
     }
 
     private sealed class TouchingTakenWriter : ITakenMetadataWriter
