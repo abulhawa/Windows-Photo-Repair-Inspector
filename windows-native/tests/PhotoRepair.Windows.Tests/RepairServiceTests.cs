@@ -83,11 +83,11 @@ public sealed class RepairServiceTests : IDisposable
     }
 
     [Fact]
-    public void TakenRepairRestoresAllFilesystemTimesEvenIfWriterTouchesThem()
+    public void TakenRepairRestoresAllFilesystemTimesWhenWriterFailsAfterTouchingThem()
     {
         string path = Make();
         var reader = new MetadataReader();
-        var service = new RepairService(root, reader, new TouchingTakenWriter());
+        var service = new RepairService(root, reader, new FailingTouchingTakenWriter());
         var plan = RepairPlanner.Plan(reader.ReadFile(path), RepairPlanner.FindMethod("taken:filename"));
         DateTime created = File.GetCreationTimeUtc(path);
         DateTime modified = File.GetLastWriteTimeUtc(path);
@@ -95,10 +95,12 @@ public sealed class RepairServiceTests : IDisposable
 
         var result = service.Apply(plan, createBackup: false);
 
-        Assert.True(result.Success, result.Status);
+        Assert.False(result.Success);
+        Assert.Contains("simulated metadata failure", result.Status);
         Assert.Equal(created, File.GetCreationTimeUtc(path));
         Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
         Assert.Equal(accessed, File.GetLastAccessTimeUtc(path));
+        Assert.Contains("ERROR (no backup)", File.ReadAllText(service.LogPath));
     }
 
     [Fact]
@@ -122,6 +124,7 @@ public sealed class RepairServiceTests : IDisposable
         Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
         Assert.Equal(accessed, File.GetLastAccessTimeUtc(path));
         Assert.Equal("2024-03-21 17:45:32", reader.ReadTaken(path));
+        Assert.Equal("2024-03-21 17:45:32", result.RefreshedRecord?.Taken);
         Assert.Equal(beforeScanData, FromStartOfScan(File.ReadAllBytes(path)));
     }
 
@@ -148,7 +151,7 @@ public sealed class RepairServiceTests : IDisposable
         throw new Xunit.Sdk.XunitException("JPEG fixture has no start-of-scan marker.");
     }
 
-    private sealed class TouchingTakenWriter : ITakenMetadataWriter
+    private sealed class FailingTouchingTakenWriter : ITakenMetadataWriter
     {
         public void WriteTaken(string path, DateTimeOffset timestamp)
         {
@@ -156,6 +159,7 @@ public sealed class RepairServiceTests : IDisposable
             File.SetCreationTimeUtc(path, changed);
             File.SetLastWriteTimeUtc(path, changed);
             File.SetLastAccessTimeUtc(path, changed);
+            throw new IOException("simulated metadata failure");
         }
     }
 }
