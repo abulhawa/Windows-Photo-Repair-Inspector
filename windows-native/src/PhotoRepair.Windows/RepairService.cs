@@ -39,17 +39,17 @@ public sealed class RepairService
     {
         string path = Path.GetFullPath(previewedPlan.Record.Path);
         string? backup = null;
-        FileTimes? takenTimes = null;
+        FileTimes? originalTimes = null;
+        RollbackState? rollback = null;
         try
         {
-            path = RequireInsideRoot(path);
+            path = RequireSafeSourcePath(path);
             if (!File.Exists(path)) throw new FileNotFoundException("The selected file no longer exists.", path);
 
-            // Capture these before even re-reading metadata. The complete Taken At
-            // repair attempt, including backup and post-write rescan, must not alter
-            // filesystem Created, Modified, or Accessed timestamps.
-            if (previewedPlan.Method.Target == "taken")
-                takenTimes = FileTimes.Capture(path);
+            // Capture the pre-attempt filesystem state before metadata reads can
+            // touch Accessed. Taken At success restores these values; every target
+            // uses them if a later verification or logging step needs rollback.
+            originalTimes = FileTimes.Capture(path);
 
             // Re-read immediately before writing. If the values shown in the
             // confirmation preview are stale, do not apply an unreviewed change.
@@ -63,6 +63,11 @@ public sealed class RepairService
                     "File metadata changed since the preview. Rescan and review the change again.");
             }
 
+            // Do not begin a destructive operation until both the source path and
+            // any existing backup path are proven to contain no junction/symlink
+            // traversal. Rollback state is private and is retained until the
+            // post-write rescan, verification and audit-log append all succeed.
+            rollback = RollbackState.Capture(path, currentPlan.Method.Target, originalTimes.Value);
             if (createBackup) backup = BackupFile(path);
             DateTimeOffset value = currentPlan.ProposedValue
                 ?? throw new InvalidOperationException("The repair source timestamp is no longer available.");
@@ -82,35 +87,62 @@ public sealed class RepairService
                     throw new InvalidOperationException($"Unknown repair target: {currentPlan.Method.Target}");
             }
 
-            // For metadata-only repairs restore filesystem timestamps before the
-            // required post-repair rescan so the refreshed in-memory record also
-            // reflects the preserved values. Restore Accessed again after reading.
-            if (takenTimes is { } beforeRescan) beforeRescan.Restore(path);
+            // Metadata-only repairs must preserve filesystem timestamps. Restore
+            // before rescanning so the refreshed record contains the preserved
+            // Created/Modified values, then restore Accessed once more after read.
+            if (currentPlan.Method.Target == "taken") originalTimes.Value.Restore(path);
             MediaRecord refreshed = reader.ReadFile(path);
-            if (takenTimes is { } afterRescan) afterRescan.Restore(path);
+            if (currentPlan.Method.Target == "taken") originalTimes.Value.Restore(path);
 
             if (TargetDisplay(refreshed, currentPlan.Method.Target) != currentPlan.After)
                 throw new IOException("Repair did not produce the value confirmed in the preview.");
 
             string status = createBackup ? "OK" : "OK (no backup)";
             AppendLog(path, currentPlan.Method.Label, currentPlan.Before, currentPlan.After, backup, status);
+            rollback.Commit();
             return new RepairExecutionResult(currentPlan, true, status, backup, refreshed);
         }
         catch (Exception ex)
         {
-            if (takenTimes is { } preserved)
+            if (rollback is not null)
             {
-                try { preserved.Restore(path); }
-                catch (Exception restoreError)
+                try
+                {
+                    // Revalidate the path before rollback as well. Never restore a
+                    // snapshot through a path that has meanwhile become a junction.
+                    RequireSafeSourcePath(path);
+                    rollback.Restore();
+                }
+                catch (Exception rollbackError)
                 {
                     ex = new IOException(
-                        $"{ex.Message} Additionally, filesystem timestamps could not be restored: {restoreError.Message}",
+                        $"{ex.Message} Additionally, the pre-repair state could not be restored: {rollbackError.Message}",
                         ex);
                 }
             }
+            else if (originalTimes is { } preserved && File.Exists(path))
+            {
+                // No content write was started, but a metadata read may have
+                // touched Accessed. Taken At promises complete time preservation.
+                if (previewedPlan.Method.Target == "taken")
+                {
+                    try { preserved.Restore(path); }
+                    catch (Exception restoreError)
+                    {
+                        ex = new IOException(
+                            $"{ex.Message} Additionally, filesystem timestamps could not be restored: {restoreError.Message}",
+                            ex);
+                    }
+                }
+            }
+
             string status = createBackup ? $"ERROR: {ex.Message}" : $"ERROR (no backup): {ex.Message}";
             TryAppendFailureLog(path, previewedPlan, backup, status);
             return new RepairExecutionResult(previewedPlan, false, status, backup, null);
+        }
+        finally
+        {
+            rollback?.Dispose();
         }
     }
 
@@ -126,23 +158,39 @@ public sealed class RepairService
 
     private string BackupFile(string path)
     {
-        string safePath = RequireInsideRoot(path);
+        string safePath = RequireSafeSourcePath(path);
         string relative = Path.GetRelativePath(root, safePath);
         string backup = Path.GetFullPath(Path.Combine(backupRoot, relative));
         RequireInsideDirectory(backupRoot, backup, "Backup path escaped the backup directory.");
+        RequireNoReparseTraversal(root, backup, allowMissingTail: true,
+            "Backup path traverses a junction or symbolic link.");
 
-        if (File.Exists(backup)) return backup;
+        if (File.Exists(backup))
+        {
+            RequireNoReparseTraversal(root, backup, allowMissingTail: false,
+                "Existing backup is a junction or symbolic link.");
+            return backup;
+        }
+
+        string parent = Path.GetDirectoryName(backup)
+            ?? throw new InvalidOperationException("Backup path has no parent directory.");
+        Directory.CreateDirectory(parent);
+        RequireNoReparseTraversal(root, parent, allowMissingTail: false,
+            "Backup directory traverses a junction or symbolic link.");
 
         var times = FileTimes.Capture(safePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
         File.Copy(safePath, backup, overwrite: false);
+        RequireNoReparseTraversal(root, backup, allowMissingTail: false,
+            "Created backup resolved through a junction or symbolic link.");
         times.Restore(backup);
         return backup;
     }
 
-    private string RequireInsideRoot(string path)
+    private string RequireSafeSourcePath(string path)
     {
         RequireInsideDirectory(root, path, "Selected file is outside the scanned folder.");
+        RequireNoReparseTraversal(root, path, allowMissingTail: false,
+            "Selected file path traverses a junction or symbolic link.");
         return path;
     }
 
@@ -158,6 +206,46 @@ public sealed class RepairService
         {
             throw new InvalidOperationException(message);
         }
+    }
+
+    private static void RequireNoReparseTraversal(
+        string trustedRoot,
+        string candidate,
+        bool allowMissingTail,
+        string message)
+    {
+        string fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(trustedRoot));
+        string fullCandidate = Path.GetFullPath(candidate);
+        RequireInsideDirectory(fullRoot, fullCandidate, message);
+
+        if (!Directory.Exists(fullRoot))
+            throw new DirectoryNotFoundException("The scanned folder is no longer available.");
+        ThrowIfReparsePoint(fullRoot, message);
+
+        string relative = Path.GetRelativePath(fullRoot, fullCandidate);
+        if (relative == ".") return;
+
+        string current = fullRoot;
+        string[] components = relative.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        foreach (string component in components)
+        {
+            current = Path.Combine(current, component);
+            bool exists = File.Exists(current) || Directory.Exists(current);
+            if (!exists)
+            {
+                if (allowMissingTail) return;
+                throw new FileNotFoundException("A repair path component is no longer available.", current);
+            }
+            ThrowIfReparsePoint(current, message);
+        }
+    }
+
+    private static void ThrowIfReparsePoint(string path, string message)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidOperationException(message);
     }
 
     private void TryAppendFailureLog(
@@ -185,7 +273,13 @@ public sealed class RepairService
         string? backup,
         string status)
     {
+        RequireNoReparseTraversal(root, logPath, allowMissingTail: true,
+            "Repair log path traverses a junction or symbolic link.");
         bool exists = File.Exists(logPath);
+        if (exists)
+            RequireNoReparseTraversal(root, logPath, allowMissingTail: false,
+                "Repair log is a junction or symbolic link.");
+
         using var stream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read);
         using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         if (!exists)
@@ -209,6 +303,80 @@ public sealed class RepairService
         value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0
             ? $"\"{value.Replace("\"", "\"\"")}\""
             : value;
+
+    private sealed class RollbackState : IDisposable
+    {
+        private readonly string path;
+        private readonly FileTimes times;
+        private readonly FileAttributes attributes;
+        private readonly FileStream? snapshot;
+        private bool committed;
+        private bool restored;
+
+        private RollbackState(
+            string path,
+            FileTimes times,
+            FileAttributes attributes,
+            FileStream? snapshot)
+        {
+            this.path = path;
+            this.times = times;
+            this.attributes = attributes;
+            this.snapshot = snapshot;
+        }
+
+        public static RollbackState Capture(string path, string target, FileTimes times)
+        {
+            FileAttributes attributes = File.GetAttributes(path);
+            if (target != "taken")
+                return new RollbackState(path, times, attributes, null);
+
+            string directory = Path.GetDirectoryName(path)
+                ?? throw new InvalidOperationException("Repair path has no parent directory.");
+            string temp = Path.Combine(
+                directory,
+                $".{Path.GetFileName(path)}.photo-repair-txn-{Guid.NewGuid():N}.tmp");
+            var snapshot = new FileStream(temp, new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.ReadWrite,
+                Share = FileShare.None,
+                Options = FileOptions.DeleteOnClose | FileOptions.SequentialScan
+            });
+            try
+            {
+                using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                source.CopyTo(snapshot);
+                snapshot.Flush(flushToDisk: true);
+                snapshot.Position = 0;
+                return new RollbackState(path, times, attributes, snapshot);
+            }
+            catch
+            {
+                snapshot.Dispose();
+                throw;
+            }
+        }
+
+        public void Commit() => committed = true;
+
+        public void Restore()
+        {
+            if (committed || restored) return;
+            if (snapshot is not null)
+            {
+                snapshot.Position = 0;
+                using var destination = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+                snapshot.CopyTo(destination);
+                destination.Flush(flushToDisk: true);
+            }
+            File.SetAttributes(path, attributes);
+            times.Restore(path);
+            restored = true;
+        }
+
+        public void Dispose() => snapshot?.Dispose();
+    }
 
     private readonly record struct FileTimes(DateTime CreationUtc, DateTime ModifiedUtc, DateTime AccessedUtc)
     {
