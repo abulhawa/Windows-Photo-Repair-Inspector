@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using PhotoRepair.Core;
 using PhotoRepair.Windows;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage.Pickers;
@@ -54,6 +55,58 @@ public sealed partial class MainWindow : Window
         ReviewFilter.Visibility = model.View == "Review" ? Visibility.Visible : Visibility.Collapsed;
         model.Refresh();
     }
+    private void RepairMethodChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ready || RepairMethodPicker.SelectedItem is not ComboBoxItem item) return;
+        model.SetRepairMethod(item.Tag.ToString()!);
+    }
+    private void BackupToggled(object sender, RoutedEventArgs e)
+    {
+        if (ready) model.SetCreateBackup(BackupToggle.IsOn);
+    }
+    private async void ReviewChanges(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            RepairPreview preview = model.BuildRepairPreview();
+            string examples = string.Join("\n\n", preview.Examples.Select(item =>
+                $"{item.Name}\n{item.Method.Label}\n{item.Before}  →  {item.After}"));
+            string text = $"Selected: {preview.SelectedCount}\nApplicable: {preview.ApplicableCount}\nSkipped: {preview.SkippedCount}";
+            if (!model.CreateBackup)
+                text += "\n\nWARNING: Backups are OFF. These changes will be made in place without a recovery copy created by this application.";
+            if (preview.SkippedCount > 0)
+            {
+                var reasons = preview.Items.Where(item => !item.Applicable)
+                    .GroupBy(item => item.SkipReason)
+                    .Select(group => $"{group.Count()} skipped: {group.Key}");
+                text += "\n\n" + string.Join("\n", reasons);
+            }
+            if (examples.Length > 0)
+                text += $"\n\nExamples (up to 10):\n\n{examples}";
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = Root.XamlRoot,
+                Title = "Review repair changes",
+                Content = new ScrollViewer
+                {
+                    MaxHeight = 520,
+                    Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }
+                },
+                CloseButtonText = preview.ApplicableCount > 0 ? "Cancel" : "Close",
+                DefaultButton = ContentDialogButton.Primary
+            };
+            if (preview.ApplicableCount > 0) dialog.PrimaryButtonText = "Apply repairs";
+
+            ContentDialogResult result = await dialog.ShowAsync();
+            if (result == ContentDialogResult.Primary)
+                await model.ApplyRepairAsync(preview);
+        }
+        catch (Exception ex)
+        {
+            model.ReportError($"Repair could not start: {ex.Message}");
+        }
+    }
     private void SortColumn(object sender, RoutedEventArgs e) => model.Sort(((Button)sender).Content.ToString()!);
     private void SelectAll(object sender, RoutedEventArgs e) => model.SelectAll();
     private void ClearSelection(object sender, RoutedEventArgs e) => model.ClearSelection();
@@ -65,7 +118,6 @@ public sealed partial class MainWindow : Window
     private void CheckboxClicked(object sender, RoutedEventArgs e) => SelectRow(sender, true);
     private void RowTapped(object sender, TappedRoutedEventArgs e)
     {
-        // CheckBox handles its own click. Avoid toggling twice on its bubbled tap.
         var element = e.OriginalSource as DependencyObject;
         while (element is not null && !ReferenceEquals(element, sender))
         {
