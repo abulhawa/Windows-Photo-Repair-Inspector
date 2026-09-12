@@ -1,13 +1,13 @@
-# Native Windows read-only edition (M1/M2)
+# Native Windows edition
 
 Open `PhotoRepair.sln` in Visual Studio and select **PhotoRepair.App**, **x64**,
 and the packaged launch profile. The existing Python application remains at the
-repository root and is unchanged.
+repository root as the behavioral reference during native parity work.
 
 ## Prerequisites and commands
 
 Windows 10 1809 or newer, Visual Studio with WinUI application development tools,
-.NET 10 SDK, and Windows SDK build tools are required. This project pins stable
+.NET 10 SDK, and Windows SDK build tools are required. The project pins stable
 Windows App SDK **2.4.0** and builds a self-contained x64 desktop package.
 No preview dependencies or signing certificates are required for development.
 Enable Windows Developer Mode to register the loose development package.
@@ -32,8 +32,7 @@ Get-AppxPackage QortxAI.PhotoMetadataRepairInspector | Format-List PackageFamily
 
 The registered family must be
 `QortxAI.PhotoMetadataRepairInspector_whp60drgnydpm`. Name, Publisher and
-PublisherDisplayName match `docs/store-identity.md`. The PFN in that document
-was corrected after the owner rechecked Partner Center.
+PublisherDisplayName match `docs/store-identity.md`.
 
 Check `InstallLocation` when switching between Debug and Release: Windows can
 retain an earlier development registration at the same package version. Uninstall
@@ -42,77 +41,99 @@ Launching the executable directly does not activate package identity; use Start
 or Visual Studio's packaged profile for package verification. Close the running
 app before rebuilding to release its DLLs.
 
-## Boundaries and behavior
+## Architecture and behavior
 
-- **PhotoRepair.Core** is platform-independent: records, local timestamp/filename
-  inference, media classification, review rules, query/sort helpers, repair method
-  definitions, and one selection model. Repair definitions do not execute repairs.
-- **PhotoRepair.Windows** uses .NET filesystem reads and the managed WPF adapter
-  to Windows Imaging Component (WIC). Metadata queries prefer the EXIF sub-IFD's
-  DateTimeOriginal, then DateTimeDigitized, then DateTime; top-level IFD is the
-  fallback. There is no encoder, metadata setter, or filesystem timestamp setter.
-  Streams are read-only and metadata readers run on at most eight workers.
-- **PhotoRepair.App** is packaged WinUI 3. Its code-behind connects native picker,
-  keyboard/pointer, clipboard and shell events to the UI-independent inspection
-  view model. Library, Review and the existing CSV repair log are readable.
-  Search/media/review filters, numeric column sorting, horizontal scrolling,
-  checkboxes, Ctrl/Shift selection, Select all and Clear are available.
+- **PhotoRepair.Core** is platform-independent. It contains records, timestamp and
+  filename inference, media classification, review rules, query/sort helpers,
+  selection state, repair methods, repair planning, no-op/unavailable-source
+  checks, and bounded batch previews.
+- **PhotoRepair.Windows** contains bounded scanning, filesystem timestamp access,
+  WIC metadata reading, root-confined repair execution, first-original backups,
+  audit logging, post-repair rescanning, and conservative JPEG Taken At writes.
+- **PhotoRepair.App** is packaged WinUI 3. Code-behind connects native picker,
+  keyboard/pointer, clipboard, shell and confirmation-dialog events to the
+  UI-independent inspection view model. Business repair rules remain outside the UI.
 
-Discovery is recursive and skips backup folders before traversal. Results retain
-discovery order despite concurrent reads. Cancellation returns completed partial
-results; a cancelled scan with no results keeps the previous collection. File
-read failures are isolated. Discovery also skips reparse points (avoiding junction
-cycles/out-of-root traversal) and inaccessible subdirectories. This is a deliberate
-defensive difference from Python's path traversal.
+Discovery is recursive and skips `.photo-repair-backups` before traversal.
+Results retain discovery order despite concurrent reads. Cancellation returns
+completed partial results; a cancelled scan with no results keeps the previous
+collection. Per-file read failures are isolated. Discovery also skips reparse
+points and inaccessible subdirectories.
 
 Filesystem values carry explicit offsets. Filename and EXIF timestamps retain
 local wall-clock interpretation, and epoch filenames convert to local display.
-The shared JSON contract drives every relevant M1/M2 case in the C# tests.
+The shared JSON contract drives the relevant C# parity cases.
 
-WIC codec availability differs from Pillow/pillow-heif. Discovery supports the
-same extension set; capture metadata for formats beyond the tested JPEG/IFD
-queries depends on installed codecs and exposed metadata paths. Unsupported or
-unreadable metadata is displayed as missing. This delivery establishes the tested
-read-only contract, not complete cross-format or repair parity.
+## M3 repair safety
 
-## Verification and next milestone
+A table action never modifies a file. The repair path is:
 
-Local verification on Windows 11 build 26200 with .NET SDK 10.0.401:
+1. select files and a repair method;
+2. build a pure repair plan from the scanned records;
+3. skip records whose source timestamp is unavailable, whose destination already
+   equals the proposed value, or whose Taken At target is not JPEG;
+4. show selected/applicable/skipped counts plus at most 10 exact before/after
+   examples in a dedicated confirmation dialog;
+5. show an explicit warning if backups are disabled;
+6. only after confirmation, re-read each file and reject a stale preview before
+   any destructive change;
+7. apply the repair, rescan immediately, and verify the resulting target equals
+   the value the user confirmed.
+
+Backups are enabled by default. The first pre-repair original is stored under
+`.photo-repair-backups/` using the source path relative to the scanned root.
+Existing backups are never overwritten. A record outside the scanned root is
+refused. Every normal repair attempt is appended to
+`.photo-repair-repair-log.csv`, including failures and explicitly chosen
+no-backup repairs.
+
+Created and Modified repairs use the native .NET filesystem timestamp APIs.
+Taken At repair remains JPEG-only. It never falls back to a JPEG encoder:
+
+- when a JPEG has no EXIF APP1 block, the writer inserts a minimal EXIF APP1
+  segment and leaves the JPEG scan data unchanged;
+- when EXIF already exists, WIC's in-place metadata writer is used and the repair
+  fails closed if the metadata block cannot be safely updated in place.
+
+For Taken At repairs, filesystem Created, Modified and Accessed timestamps are
+captured before metadata access, restored before the required post-repair rescan,
+and restored again after the read. A repair is reported as failed if the refreshed
+record does not contain the confirmed target value.
+
+## Verification
+
+M1/M2 was manually validated on Windows 11 build 26200 with .NET SDK 10.0.401:
 
 | Check | Result |
 | --- | --- |
 | Release solution build | Passed, zero warnings/errors |
-| Core/shared-contract tests | 29 passed |
-| Windows adapter/view-model tests | 12 passed |
-| Existing Python tests | 46 passed |
+| Core/shared-contract tests | Passed |
+| Windows adapter/view-model tests | Passed |
+| Existing Python tests | Passed |
 | Python compileall | Passed |
-| Unsigned Release MSIX | Built; optional symbol-package warning below |
+| Unsigned Release MSIX | Built |
 | Development registration and packaged activation | Passed with corrected PFN |
-| Live folder picker and generated fixture scan | 4 JPEGs, 1 Review item; same capture dates and issues as Python |
-| Live search, media/review filters, numeric sorting, horizontal scrolling | Passed |
-| Live Select all/Clear, checkbox state and repair-log view | Passed |
-| Live Stop during discovery of 5,000 synthetic JPEGs | Stopped promptly and retained previous results |
+| Live folder picker and generated fixture scan | Passed |
+| Live search, filters, sorting, scrolling and selection | Passed |
+| Live Stop during a 5,000-file synthetic scan | Stopped promptly and retained previous results |
 
-The final Release build was activated through Windows' application activation
-manager. The running process's package identity was checked (not inferred from
-its executable path). Table layout and fixture results were visually inspected.
-Inclusive Ctrl/Shift range behavior, concurrent partial cancellation and failure
-isolation also have automated coverage. GitHub Actions performs the same native
-build/test/package steps on pull requests.
+M3 adds automated coverage for repair planning, unavailable/no-op skipping,
+10-example preview limits, first-original backups, backup-off auditing, root
+confinement, stale-preview refusal, Created/Modified application, post-repair
+view-model refresh, filesystem timestamp preservation, and JPEG Taken At repair.
+JPEG tests compare bytes from the Start Of Scan marker onward so metadata repair
+cannot silently pass after image recompression. Both missing-EXIF insertion and
+existing-EXIF update paths are exercised on generated fixtures.
 
-Generated 12x12 JPEG fixtures under `tests/PhotoRepair.Windows.Tests/Fixtures`
-contain nested, digitized-only, top-level and absent EXIF dates. `generate.py`
-recreates them with the repository's Python dependencies. Tests check capture
-values, unchanged file bytes and Created/Modified timestamps, supported discovery,
-backup exclusion, concurrency bounds, progress, ordering, cancellation, isolated
-failures, and view-model filtering/selection.
+A final M3 manual destructive-operation pass on Windows is still required before
+native repair parity is declared complete. That pass should exercise the preview
+UI, backup-on and backup-off warnings, a real JPEG with existing EXIF, the Repair
+log, and post-repair Library/Review behavior.
 
-Before M3, implement and verify the migration document's safety invariants:
-preview/confirmation, first-original backups, audit logging, containment checks,
-conservative JPEG metadata writes, image-payload preservation, filesystem timestamp
-restoration, and post-repair rescanning. No M3 write behavior is present here.
+## M4 remains separate
 
-Store assets are the installed WinUI template's development placeholders. Store
-signing, final artwork, clean-profile installation/uninstallation and submission
-remain M4 work. The unsigned MSIX build may warn that optional `mspdbcmf.exe`
-symbol-package tooling is absent; this does not prevent creating the MSIX.
+Store identity is already populated from the Partner Center reservation and the
+Release configuration can build an unsigned MSIX. Final Store artwork, production
+signing, clean-profile install/uninstall validation, and Microsoft Store submission
+remain M4 work. The unsigned MSIX build can warn when optional `mspdbcmf.exe`
+symbol-package tooling is absent; that warning does not prevent MSIX creation.
