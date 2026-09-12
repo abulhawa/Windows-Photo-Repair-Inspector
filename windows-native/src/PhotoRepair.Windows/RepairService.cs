@@ -39,10 +39,17 @@ public sealed class RepairService
     {
         string path = Path.GetFullPath(previewedPlan.Record.Path);
         string? backup = null;
+        FileTimes? takenTimes = null;
         try
         {
             path = RequireInsideRoot(path);
             if (!File.Exists(path)) throw new FileNotFoundException("The selected file no longer exists.", path);
+
+            // Capture these before even re-reading metadata. The complete Taken At
+            // repair attempt, including backup and post-write rescan, must not alter
+            // filesystem Created, Modified, or Accessed timestamps.
+            if (previewedPlan.Method.Target == "taken")
+                takenTimes = FileTimes.Capture(path);
 
             // Re-read immediately before writing. If the values shown in the
             // confirmation preview are stale, do not apply an unreviewed change.
@@ -69,19 +76,31 @@ public sealed class RepairService
                     File.SetLastWriteTimeUtc(path, value.UtcDateTime);
                     break;
                 case "taken":
-                    ApplyTakenPreservingFilesystemTimes(path, value);
+                    takenWriter.WriteTaken(path, value);
                     break;
                 default:
                     throw new InvalidOperationException($"Unknown repair target: {currentPlan.Method.Target}");
             }
 
             MediaRecord refreshed = reader.ReadFile(path);
+            if (takenTimes is { } preserved) preserved.Restore(path);
+
             string status = createBackup ? "OK" : "OK (no backup)";
             AppendLog(path, currentPlan.Method.Label, currentPlan.Before, currentPlan.After, backup, status);
             return new RepairExecutionResult(currentPlan, true, status, backup, refreshed);
         }
         catch (Exception ex)
         {
+            if (takenTimes is { } preserved)
+            {
+                try { preserved.Restore(path); }
+                catch (Exception restoreError)
+                {
+                    ex = new IOException(
+                        $"{ex.Message} Additionally, filesystem timestamps could not be restored: {restoreError.Message}",
+                        ex);
+                }
+            }
             string status = createBackup ? $"ERROR: {ex.Message}" : $"ERROR (no backup): {ex.Message}";
             TryAppendFailureLog(path, previewedPlan, backup, status);
             return new RepairExecutionResult(previewedPlan, false, status, backup, null);
@@ -112,20 +131,6 @@ public sealed class RepairService
         File.Copy(safePath, backup, overwrite: false);
         times.Restore(backup);
         return backup;
-    }
-
-    private void ApplyTakenPreservingFilesystemTimes(string path, DateTimeOffset value)
-    {
-        var times = FileTimes.Capture(path);
-        try
-        {
-            takenWriter.WriteTaken(path, value);
-        }
-        finally
-        {
-            // Restore even when the metadata writer fails after touching the file.
-            times.Restore(path);
-        }
     }
 
     private string RequireInsideRoot(string path)
@@ -186,7 +191,7 @@ public sealed class RepairService
     }
 
     private static string Csv(string value) =>
-        value.IndexOfAny([',', '"', '\r', '\n']) >= 0
+        value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0
             ? $"\"{value.Replace("\"", "\"\"")}\""
             : value;
 
