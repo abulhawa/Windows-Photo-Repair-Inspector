@@ -82,8 +82,15 @@ public sealed class RepairService
                     throw new InvalidOperationException($"Unknown repair target: {currentPlan.Method.Target}");
             }
 
+            // For metadata-only repairs restore filesystem timestamps before the
+            // required post-repair rescan so the refreshed in-memory record also
+            // reflects the preserved values. Restore Accessed again after reading.
+            if (takenTimes is { } beforeRescan) beforeRescan.Restore(path);
             MediaRecord refreshed = reader.ReadFile(path);
-            if (takenTimes is { } preserved) preserved.Restore(path);
+            if (takenTimes is { } afterRescan) afterRescan.Restore(path);
+
+            if (TargetDisplay(refreshed, currentPlan.Method.Target) != currentPlan.After)
+                throw new IOException("Repair did not produce the value confirmed in the preview.");
 
             string status = createBackup ? "OK" : "OK (no backup)";
             AppendLog(path, currentPlan.Method.Label, currentPlan.Before, currentPlan.After, backup, status);
@@ -189,6 +196,14 @@ public sealed class RepairService
             Csv(path), Csv(operation), Csv(before), Csv(after), Csv(backup ?? ""), Csv(status)
         }));
     }
+
+    private static string TargetDisplay(MediaRecord record, string target) => target switch
+    {
+        "created" => record.Created,
+        "modified" => record.Modified,
+        "taken" => string.IsNullOrWhiteSpace(record.Taken) ? "(missing)" : record.Taken,
+        _ => throw new InvalidOperationException($"Unknown repair target: {target}")
+    };
 
     private static string Csv(string value) =>
         value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0
