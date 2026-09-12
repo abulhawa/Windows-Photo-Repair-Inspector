@@ -48,8 +48,9 @@ app before rebuilding to release its DLLs.
   selection state, repair methods, repair planning, no-op/unavailable-source
   checks, and bounded batch previews.
 - **PhotoRepair.Windows** contains bounded scanning, filesystem timestamp access,
-  WIC metadata reading, root-confined repair execution, first-original backups,
-  audit logging, post-repair rescanning, and conservative JPEG Taken At writes.
+  WIC metadata reading, root-confined repair execution, reparse-point rejection,
+  first-original backups, transactional rollback, audit logging, post-repair
+  rescanning, and conservative JPEG Taken At writes.
 - **PhotoRepair.App** is packaged WinUI 3. Code-behind connects native picker,
   keyboard/pointer, clipboard, shell and confirmation-dialog events to the
   UI-independent inspection view model. Business repair rules remain outside the UI.
@@ -77,16 +78,28 @@ A table action never modifies a file. The repair path is:
 5. show an explicit warning if backups are disabled;
 6. only after confirmation, re-read each file and reject a stale preview before
    any destructive change;
-7. apply the repair, restore protected filesystem timestamps when applicable,
-   rescan immediately, and verify the resulting target equals the value the user
-   confirmed.
+7. reject the repair if the scanned root, source path, backup path, or audit-log
+   path traverses a junction or symbolic link;
+8. capture rollback state before the write. Filesystem-time repairs retain the
+   original times; Taken At repairs retain a private byte-for-byte temporary copy;
+9. apply the repair, restore protected filesystem timestamps when applicable,
+   rescan immediately, verify the resulting target equals the value the user
+   confirmed, and append the audit entry;
+10. commit the repair only after all post-write checks and logging succeed.
+
+If any step after the write fails, the pre-repair state is restored before the
+operation is reported as failed. This rollback also applies when built-in backups
+were explicitly disabled. Temporary Taken At rollback copies use delete-on-close
+storage and are not retained after the attempt completes.
 
 Backups are enabled by default. The first pre-repair original is stored under
 `.photo-repair-backups/` using the source path relative to the scanned root.
 Existing backups are never overwritten. A record outside the scanned root is
-refused. Every normal repair attempt is appended to
-`.photo-repair-repair-log.csv`, including failures and explicitly chosen
-no-backup repairs.
+refused, and existing reparse points anywhere in the root/source/backup traversal
+are refused rather than resolved and trusted. Every normal repair attempt is
+appended to `.photo-repair-repair-log.csv`, including failures and explicitly
+chosen no-backup repairs. The log path itself is also rejected if it is redirected
+through a reparse point.
 
 Created and Modified repairs use the native .NET filesystem timestamp APIs.
 Taken At repair remains JPEG-only and never invokes a JPEG encoder. The native
@@ -105,7 +118,8 @@ writer operates only on the EXIF APP1 metadata segment:
 For Taken At repairs, filesystem Created, Modified and Accessed timestamps are
 captured before metadata access, restored before the required post-repair rescan,
 and restored again after the read. A repair is reported as failed if the refreshed
-record does not contain the confirmed target value.
+record does not contain the confirmed target value; the original bytes and
+filesystem timestamps are then restored from the private rollback state.
 
 ## Verification
 
@@ -127,10 +141,13 @@ M1/M2 was manually validated on Windows 11 build 26200 with .NET SDK 10.0.401:
 M3 adds automated coverage for repair planning, unavailable/no-op skipping,
 10-example preview limits, first-original backups, backup-off auditing, root
 confinement, stale-preview refusal, Created/Modified application, post-repair
-view-model refresh, failure-path filesystem timestamp restoration, and JPEG Taken
-At repair. JPEG tests compare bytes from the Start Of Scan marker onward so a
-metadata repair cannot silently pass after image recompression. Existing-EXIF,
-empty-EXIF, and genuinely no-EXIF paths are exercised on synthetic fixtures.
+view-model refresh, failure-path rollback, junction redirection of the source and
+backup tree, filesystem timestamp restoration, and JPEG Taken At repair. JPEG
+tests compare bytes from the Start Of Scan marker onward so a metadata repair
+cannot silently pass after image recompression. Existing-EXIF, empty-EXIF, and
+genuinely no-EXIF paths are exercised on synthetic fixtures. Post-write tests
+also force verification and audit-log failures with backups disabled and require
+the pre-repair state to be restored.
 
 A final M3 manual destructive-operation pass on Windows is still required before
 native repair parity is declared complete. That pass should exercise the preview
