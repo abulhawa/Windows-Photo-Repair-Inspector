@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using PhotoRepair.Core;
 
 namespace PhotoRepair.Windows.Tests;
@@ -83,6 +84,105 @@ public sealed class RepairServiceTests : IDisposable
     }
 
     [Fact]
+    public void ReplacingScannedDirectoryWithJunctionIsRefusedBeforeWrite()
+    {
+        string originalPath = Make("album/IMG_20240321_174532.jpg");
+        var reader = new MetadataReader();
+        var service = new RepairService(root, reader);
+        var plan = RepairPlanner.Plan(reader.ReadFile(originalPath), RepairPlanner.FindMethod("modified:filename"));
+        string album = Path.GetDirectoryName(originalPath)!;
+        string outside = Path.Combine(Path.GetTempPath(), "PhotoRepair.Outside", Guid.NewGuid().ToString("N"));
+        string target = Path.Combine(outside, "album-target");
+        Directory.CreateDirectory(outside);
+        Directory.Move(album, target);
+        CreateJunction(album, target);
+        string redirectedPath = Path.Combine(target, Path.GetFileName(originalPath));
+        DateTime before = File.GetLastWriteTimeUtc(redirectedPath);
+
+        try
+        {
+            var result = service.Apply(plan, createBackup: false);
+
+            Assert.False(result.Success);
+            Assert.Contains("junction or symbolic link", result.Status);
+            Assert.Equal(before, File.GetLastWriteTimeUtc(redirectedPath));
+        }
+        finally
+        {
+            if (Directory.Exists(album)) Directory.Delete(album);
+            if (Directory.Exists(outside)) Directory.Delete(outside, true);
+        }
+    }
+
+    [Fact]
+    public void BackupDirectoryJunctionIsRefusedBeforeSourceModification()
+    {
+        string path = Make();
+        var reader = new MetadataReader();
+        var service = new RepairService(root, reader);
+        var plan = RepairPlanner.Plan(reader.ReadFile(path), RepairPlanner.FindMethod("created:filename"));
+        DateTime before = File.GetCreationTimeUtc(path);
+        string outside = Path.Combine(Path.GetTempPath(), "PhotoRepair.BackupOutside", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        CreateJunction(service.BackupRoot, outside);
+
+        try
+        {
+            var result = service.Apply(plan);
+
+            Assert.False(result.Success);
+            Assert.Contains("junction or symbolic link", result.Status);
+            Assert.Equal(before, File.GetCreationTimeUtc(path));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+        }
+        finally
+        {
+            if (Directory.Exists(service.BackupRoot)) Directory.Delete(service.BackupRoot);
+            if (Directory.Exists(outside)) Directory.Delete(outside, true);
+        }
+    }
+
+    [Fact]
+    public void PostWriteLoggingFailureRollsBackFilesystemRepairWithoutBackup()
+    {
+        string path = Make();
+        var reader = new MetadataReader();
+        var service = new RepairService(root, reader);
+        var plan = RepairPlanner.Plan(reader.ReadFile(path), RepairPlanner.FindMethod("created:filename"));
+        DateTime created = File.GetCreationTimeUtc(path);
+        DateTime modified = File.GetLastWriteTimeUtc(path);
+        Directory.CreateDirectory(service.LogPath); // Force the audit append to fail after the write.
+
+        var result = service.Apply(plan, createBackup: false);
+
+        Assert.False(result.Success);
+        Assert.Equal(created, File.GetCreationTimeUtc(path));
+        Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
+    }
+
+    [Fact]
+    public void PostWriteVerificationFailureRestoresMetadataFileBytesWithoutBackup()
+    {
+        string path = Make();
+        byte[] original = File.ReadAllBytes(path);
+        var reader = new MetadataReader();
+        var service = new RepairService(root, reader, new CorruptingNoOpTakenWriter());
+        var plan = RepairPlanner.Plan(reader.ReadFile(path), RepairPlanner.FindMethod("taken:filename"));
+        DateTime created = File.GetCreationTimeUtc(path);
+        DateTime modified = File.GetLastWriteTimeUtc(path);
+        DateTime accessed = File.GetLastAccessTimeUtc(path);
+
+        var result = service.Apply(plan, createBackup: false);
+
+        Assert.False(result.Success);
+        Assert.Contains("did not produce the value", result.Status);
+        Assert.Equal(created, File.GetCreationTimeUtc(path));
+        Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
+        Assert.Equal(accessed, File.GetLastAccessTimeUtc(path));
+        Assert.Equal(original, File.ReadAllBytes(path));
+    }
+
+    [Fact]
     public void TakenRepairRestoresAllFilesystemTimesWhenWriterFailsAfterTouchingThem()
     {
         string path = Make();
@@ -143,12 +243,39 @@ public sealed class RepairServiceTests : IDisposable
         Assert.Contains("changed since the preview", result.Status);
     }
 
+    private static void CreateJunction(string link, string target)
+    {
+        var start = new ProcessStartInfo("cmd.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("/c");
+        start.ArgumentList.Add("mklink");
+        start.ArgumentList.Add("/J");
+        start.ArgumentList.Add(link);
+        start.ArgumentList.Add(target);
+        using Process process = Process.Start(start)
+            ?? throw new Xunit.Sdk.XunitException("Could not start mklink.");
+        string output = process.StandardOutput.ReadToEnd();
+        string error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, $"mklink failed: {output} {error}");
+    }
+
     private static byte[] FromStartOfScan(byte[] jpeg)
     {
         for (int i = 0; i < jpeg.Length - 1; i++)
             if (jpeg[i] == 0xFF && jpeg[i + 1] == 0xDA)
                 return jpeg[i..];
         throw new Xunit.Sdk.XunitException("JPEG fixture has no start-of-scan marker.");
+    }
+
+    private sealed class CorruptingNoOpTakenWriter : ITakenMetadataWriter
+    {
+        public void WriteTaken(string path, DateTimeOffset timestamp) => File.WriteAllText(path, "corrupted");
     }
 
     private sealed class FailingTouchingTakenWriter : ITakenMetadataWriter
