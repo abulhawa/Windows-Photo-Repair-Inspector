@@ -8,7 +8,7 @@ Use these exact values in the packaged Windows application manifest and Store bu
 Package/Identity/Name: QortxAI.PhotoMetadataRepairInspector
 Package/Identity/Publisher: CN=7F9981DB-6481-4EE5-8747-A3A63C186D7D
 Package/Properties/PublisherDisplayName: QortxAI
-Package Family Name (PFN): QortxAI.PhotoMetadataRepairInspector_whp60drqnvnpm
+Package Family Name (PFN): QortxAI.PhotoMetadataRepairInspector_whp60drgnydpm
 Store ID: 9PPP5290T27G
 ```
 

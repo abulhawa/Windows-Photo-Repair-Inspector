@@ -1,0 +1,79 @@
+<Window x:Class="PhotoRepair.App.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="Photo Metadata Repair Inspector">
+ <Grid x:Name="Root" Padding="16" RowSpacing="10" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <Grid ColumnSpacing="8">
+   <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <Button Content="Scan folder…" Click="PickFolder" IsEnabled="{Binding CanScan}"/>
+   <Button Grid.Column="1" Content="Stop" Click="StopScan" IsEnabled="{Binding IsScanning}"/>
+   <TextBox Grid.Column="2" x:Name="SearchBox" PlaceholderText="Search filename or path" AutomationProperties.Name="Search filename or path" TextChanged="SearchChanged"/>
+   <ComboBox Grid.Column="3" x:Name="MediaFilter" SelectedIndex="0" SelectionChanged="FilterChanged" AutomationProperties.Name="Media filter">
+    <ComboBoxItem Content="All" Tag="All"/><ComboBoxItem Content="Images" Tag="image"/><ComboBoxItem Content="Videos" Tag="video"/>
+   </ComboBox>
+  </Grid>
+  <StackPanel Grid.Row="1" Spacing="4">
+   <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding Status}"/>
+   <Grid><TextBlock Text="{Binding Summary}"/><TextBlock Text="{Binding ProgressText}" HorizontalAlignment="Right"/></Grid>
+   <ProgressBar Value="{Binding Completed}" Maximum="{Binding Total}"/>
+  </StackPanel>
+  <Grid Grid.Row="2">
+   <StackPanel Orientation="Horizontal" Spacing="8">
+    <ComboBox x:Name="ViewPicker" SelectedIndex="0" SelectionChanged="ViewChanged" AutomationProperties.Name="View">
+     <ComboBoxItem Content="Library"/><ComboBoxItem Content="Review"/><ComboBoxItem Content="Repair log"/>
+    </ComboBox>
+    <ComboBox x:Name="ReviewFilter" SelectedIndex="0" SelectionChanged="FilterChanged" AutomationProperties.Name="Review filter">
+     <ComboBoxItem Content="All review items"/><ComboBoxItem Content="Missing Taken At"/><ComboBoxItem Content="Taken &gt; Created"/><ComboBoxItem Content="Taken &gt; Modified"/>
+    </ComboBox>
+   </StackPanel>
+   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8"><Button Content="Select all" Click="SelectAll"/><Button Content="Clear" Click="ClearSelection"/></StackPanel>
+  </Grid>
+  <ListView x:Name="Table" Grid.Row="3" ItemsSource="{Binding Rows}" SelectionMode="None"
+   ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollMode="Enabled">
+   <ListView.ItemContainerStyle>
+    <Style TargetType="ListViewItem">
+     <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+     <Setter Property="Padding" Value="0"/>
+     <Setter Property="UseSystemFocusVisuals" Value="True"/>
+     <!-- The stock presenter reserves space for its own selection checkbox.
+          This table supplies one checkbox bound to the shared selection model. -->
+     <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListViewItem">
+      <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+       HorizontalContentAlignment="Stretch"/>
+     </ControlTemplate></Setter.Value></Setter>
+    </Style>
+   </ListView.ItemContainerStyle>
+   <ListView.Header>
+    <StackPanel Orientation="Horizontal" Spacing="0">
+     <TextBlock Text="Select" Width="64" VerticalAlignment="Center"/>
+     <Button Content="File" Width="240" Click="SortColumn"/><Button Content="Type" Width="75" Click="SortColumn"/>
+     <Button Content="Size" Width="90" Click="SortColumn"/><Button Content="Created" Width="165" Click="SortColumn"/>
+     <Button Content="Modified" Width="165" Click="SortColumn"/><Button Content="Taken At" Width="165" Click="SortColumn"/>
+     <Button Content="Filename Date" Width="165" Click="SortColumn"/><Button Content="Location" Width="260" Click="SortColumn"/>
+     <Button Content="Review reason" Width="250" Click="SortColumn"/>
+    </StackPanel>
+   </ListView.Header>
+   <ListView.ItemTemplate>
+    <DataTemplate>
+     <Grid Tapped="RowTapped" KeyDown="RowKeyDown" Padding="0,6" Background="Transparent" ToolTipService.ToolTip="{Binding Record.Path}">
+      <Grid.ContextFlyout><MenuFlyout><MenuFlyoutItem Text="Open file" Click="OpenFile"/><MenuFlyoutItem Text="Show in Explorer" Click="RevealFile"/><MenuFlyoutItem Text="Copy full path" Click="CopyPath"/></MenuFlyout></Grid.ContextFlyout>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="240"/><ColumnDefinition Width="75"/><ColumnDefinition Width="90"/><ColumnDefinition Width="165"/><ColumnDefinition Width="165"/><ColumnDefinition Width="165"/><ColumnDefinition Width="165"/><ColumnDefinition Width="260"/><ColumnDefinition Width="250"/></Grid.ColumnDefinitions>
+      <CheckBox MinWidth="0" Width="32" HorizontalAlignment="Left" IsChecked="{Binding IsSelected, Mode=OneWay}" Click="CheckboxClicked" AutomationProperties.Name="{Binding Record.Name}"/>
+      <TextBlock Grid.Column="1" Text="{Binding Record.Name}" TextTrimming="CharacterEllipsis"/>
+      <TextBlock Grid.Column="2" Text="{Binding Record.MediaType}"/>
+      <TextBlock Grid.Column="3" Text="{Binding Record.Size}"/>
+      <TextBlock Grid.Column="4" Text="{Binding Record.Created}"/>
+      <TextBlock Grid.Column="5" Text="{Binding Record.Modified}"/>
+      <TextBlock Grid.Column="6" Text="{Binding Record.Taken}"/>
+      <TextBlock Grid.Column="7" Text="{Binding Record.FilenameDate}"/>
+      <TextBlock Grid.Column="8" Text="{Binding Record.Location}" TextTrimming="CharacterEllipsis"/>
+      <TextBlock Grid.Column="9" Text="{Binding Record.ReviewReason}" TextTrimming="CharacterEllipsis"/>
+     </Grid>
+    </DataTemplate>
+   </ListView.ItemTemplate>
+  </ListView>
+  <ScrollViewer x:Name="LogPanel" Grid.Row="3" Visibility="Collapsed"><TextBlock Text="{Binding Log}" IsTextSelectionEnabled="True" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+  <TextBlock Grid.Row="4" Text="{Binding SelectionSummary}"/>
+ </Grid>
+</Window>
