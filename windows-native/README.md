@@ -77,8 +77,9 @@ A table action never modifies a file. The repair path is:
 5. show an explicit warning if backups are disabled;
 6. only after confirmation, re-read each file and reject a stale preview before
    any destructive change;
-7. apply the repair, rescan immediately, and verify the resulting target equals
-   the value the user confirmed.
+7. apply the repair, restore protected filesystem timestamps when applicable,
+   rescan immediately, and verify the resulting target equals the value the user
+   confirmed.
 
 Backups are enabled by default. The first pre-repair original is stored under
 `.photo-repair-backups/` using the source path relative to the scanned root.
@@ -88,12 +89,18 @@ refused. Every normal repair attempt is appended to
 no-backup repairs.
 
 Created and Modified repairs use the native .NET filesystem timestamp APIs.
-Taken At repair remains JPEG-only. It never falls back to a JPEG encoder:
+Taken At repair remains JPEG-only and never invokes a JPEG encoder. The native
+writer operates only on the EXIF APP1 metadata segment:
 
-- when a JPEG has no EXIF APP1 block, the writer inserts a minimal EXIF APP1
-  segment and leaves the JPEG scan data unchanged;
-- when EXIF already exists, WIC's in-place metadata writer is used and the repair
-  fails closed if the metadata block cannot be safely updated in place.
+- if the JPEG has no EXIF APP1 segment, a minimal EXIF segment is inserted before
+  image data;
+- if EXIF already exists, the existing TIFF payload remains at the same relative
+  offsets, unknown IFD entries and pointers are preserved, and new IFD0/Exif IFD
+  tables are appended with DateTime, DateTimeOriginal and DateTimeDigitized set
+  to the confirmed value;
+- malformed TIFF headers, unsupported EXIF IFD pointer representations, invalid
+  offsets, or an APP1 payload that would exceed JPEG's segment-size limit fail
+  closed rather than rewriting image pixels.
 
 For Taken At repairs, filesystem Created, Modified and Accessed timestamps are
 captured before metadata access, restored before the required post-repair rescan,
@@ -120,10 +127,10 @@ M1/M2 was manually validated on Windows 11 build 26200 with .NET SDK 10.0.401:
 M3 adds automated coverage for repair planning, unavailable/no-op skipping,
 10-example preview limits, first-original backups, backup-off auditing, root
 confinement, stale-preview refusal, Created/Modified application, post-repair
-view-model refresh, filesystem timestamp preservation, and JPEG Taken At repair.
-JPEG tests compare bytes from the Start Of Scan marker onward so metadata repair
-cannot silently pass after image recompression. Both missing-EXIF insertion and
-existing-EXIF update paths are exercised on generated fixtures.
+view-model refresh, failure-path filesystem timestamp restoration, and JPEG Taken
+At repair. JPEG tests compare bytes from the Start Of Scan marker onward so a
+metadata repair cannot silently pass after image recompression. Existing-EXIF,
+empty-EXIF, and genuinely no-EXIF paths are exercised on synthetic fixtures.
 
 A final M3 manual destructive-operation pass on Windows is still required before
 native repair parity is declared complete. That pass should exercise the preview
