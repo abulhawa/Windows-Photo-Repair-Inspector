@@ -31,12 +31,14 @@ public sealed class TakenMetadataWriterTests : IDisposable
         var result = new RepairService(root, reader).Apply(plan, createBackup: false);
 
         Assert.True(result.Success, result.Status);
-        Assert.Equal("2024-03-21 18:00:00", reader.ReadTaken(path));
-        Assert.Equal("2024-03-21 18:00:00", result.RefreshedRecord?.Taken);
-        Assert.Equal(beforeScanData, FromStartOfScan(File.ReadAllBytes(path)));
+        // Assert filesystem preservation before any additional metadata/file read;
+        // those reads are allowed to update Accessed on some Windows volumes.
         Assert.Equal(created, File.GetCreationTimeUtc(path));
         Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
         Assert.Equal(accessed, File.GetLastAccessTimeUtc(path));
+        Assert.Equal("2024-03-21 18:00:00", reader.ReadTaken(path));
+        Assert.Equal("2024-03-21 18:00:00", result.RefreshedRecord?.Taken);
+        Assert.Equal(beforeScanData, FromStartOfScan(File.ReadAllBytes(path)));
     }
 
     [Fact]
