@@ -159,6 +159,7 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
 
         long position = 2;
         long insertOffset = 2;
+        byte[] signature = new byte[6];
         while (position < stream.Length)
         {
             stream.Position = position;
@@ -190,9 +191,8 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
 
             if (marker == 0xE1 && length >= 8)
             {
-                Span<byte> signature = stackalloc byte[6];
                 stream.ReadExactly(signature);
-                if (signature.SequenceEqual("Exif\0\0"u8))
+                if (signature.AsSpan().SequenceEqual("Exif\0\0"u8))
                     return new JpegLayout(true, insertOffset);
             }
 
