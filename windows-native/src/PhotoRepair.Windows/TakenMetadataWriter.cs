@@ -35,7 +35,7 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
     private static void UpdateExistingExifInPlace(string path, DateTimeOffset timestamp)
     {
         // Existing EXIF is updated through WIC's in-place metadata writer. No
-        // JPEG encoder is used. If WIC cannot update the existing metadata block
+        // JPEG encoder is used. If WIC cannot update any recognized date tag
         // safely in place, fail closed rather than rebuilding the image.
         using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
         var decoder = new JpegBitmapDecoder(
@@ -62,15 +62,38 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
                 "The JPEG does not have enough writable metadata space for a safe in-place Taken At update.");
 
         string value = ExifValue(timestamp);
-        try
+        bool wrote = false;
+        // The Python reference writes 0th DateTime, DateTimeOriginal and
+        // DateTimeDigitized. WIC files differ in which hierarchy is exposed, so
+        // try the same tags under both JPEG query roots. Existing tags are
+        // updated where writable; at least one recognized Taken At tag must save.
+        string[] queries =
+        [
+            "/app1/ifd/{ushort=306}",
+            "/app1/ifd/exif/{ushort=36867}",
+            "/app1/ifd/exif/{ushort=36868}",
+            "/ifd/{ushort=306}",
+            "/ifd/exif/{ushort=36867}",
+            "/ifd/exif/{ushort=36868}"
+        ];
+        foreach (string query in queries)
         {
-            writer.DateTaken = value;
+            try
+            {
+                writer.SetQuery(query, value);
+                wrote = true;
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException)
+            {
+                // Some codecs expose only one of the query roots or cannot add a
+                // missing nested tag in-place. Continue so existing writable tags
+                // can still be updated without rebuilding metadata.
+            }
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException)
-        {
+
+        if (!wrote)
             throw new InvalidDataException(
-                "The JPEG Taken At metadata could not be updated safely in place.", ex);
-        }
+                "The JPEG Taken At metadata could not be updated safely in place.");
     }
 
     private static void InsertMinimalExif(string path, long insertOffset, DateTimeOffset timestamp)
@@ -111,18 +134,15 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
         payload.Write(Encoding.ASCII.GetBytes("Exif\0\0"));
         using (var writer = new BinaryWriter(payload, Encoding.ASCII, leaveOpen: true))
         {
-            // Little-endian TIFF header.
             writer.Write((byte)'I'); writer.Write((byte)'I');
             writer.Write((ushort)42);
             writer.Write(ifd0Offset);
 
-            // IFD0: DateTime plus pointer to Exif sub-IFD.
             writer.Write((ushort)2);
-            WriteEntry(writer, 0x0132, 2, 20, dateOffset);       // DateTime
-            WriteEntry(writer, 0x8769, 4, 1, exifIfdOffset);    // ExifIFDPointer
+            WriteEntry(writer, 0x0132, 2, 20, dateOffset);
+            WriteEntry(writer, 0x8769, 4, 1, exifIfdOffset);
             writer.Write((uint)0);
 
-            // Exif IFD: DateTimeOriginal and DateTimeDigitized.
             writer.Write((ushort)2);
             WriteEntry(writer, 0x9003, 2, 20, dateOffset);
             WriteEntry(writer, 0x9004, 2, 20, dateOffset);
@@ -131,7 +151,7 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
         }
 
         byte[] body = payload.ToArray();
-        int jpegLength = checked(body.Length + 2); // Includes the two length bytes.
+        int jpegLength = checked(body.Length + 2);
         if (jpegLength > ushort.MaxValue) throw new InvalidOperationException("EXIF block is too large.");
         byte[] segment = new byte[body.Length + 4];
         segment[0] = 0xFF; segment[1] = 0xE1;
@@ -169,11 +189,10 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
             int marker;
             do { marker = stream.ReadByte(); } while (marker == 0xFF);
             if (marker < 0) throw new EndOfStreamException("Unexpected end of JPEG stream.");
-            if (marker is 0xD9 or 0xDA) break; // EOI or start of scan.
+            if (marker is 0xD9 or 0xDA) break;
             if (marker == 0x00)
                 throw new InvalidDataException("Unexpected stuffed JPEG marker before image data.");
 
-            // Standalone markers have no segment length.
             if (marker == 0x01 || marker is >= 0xD0 and <= 0xD7)
             {
                 position = stream.Position;
@@ -196,7 +215,6 @@ public sealed class TakenMetadataWriter : ITakenMetadataWriter
                     return new JpegLayout(true, insertOffset);
             }
 
-            // Keep JFIF/JFXX APP0 first, then place a new EXIF APP1 block.
             if (marker == 0xE0 && position == insertOffset)
                 insertOffset = next;
             position = next;
