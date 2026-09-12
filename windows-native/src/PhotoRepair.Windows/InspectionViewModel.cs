@@ -127,13 +127,16 @@ public sealed class InspectionViewModel(Action<Action> dispatch, MediaScanner? s
         if (IsScanning || IsApplying) throw new InvalidOperationException("Finish the current operation first.");
         if (preview.ApplicableCount == 0) return [];
 
+        // Freeze the safety choice associated with the confirmation that just
+        // occurred. Async execution must not observe a later UI toggle change.
+        bool createBackup = CreateBackup;
         applying = true;
         Status = $"Applying {preview.ApplicableCount} repair{(preview.ApplicableCount == 1 ? "" : "s")}…";
         Notify();
         try
         {
             var service = new RepairService(rootPath);
-            IReadOnlyList<RepairExecutionResult> results = await Task.Run(() => service.ApplyBatch(preview, CreateBackup));
+            IReadOnlyList<RepairExecutionResult> results = await Task.Run(() => service.ApplyBatch(preview, createBackup));
             var replacements = results
                 .Where(result => result.Success && result.RefreshedRecord is not null)
                 .ToDictionary(result => result.Plan.Path, result => result.RefreshedRecord!, StringComparer.OrdinalIgnoreCase);
