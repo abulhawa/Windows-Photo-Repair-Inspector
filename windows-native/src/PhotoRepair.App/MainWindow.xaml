@@ -36,11 +36,8 @@
      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
      <Setter Property="Padding" Value="0"/>
      <Setter Property="UseSystemFocusVisuals" Value="True"/>
-     <!-- The stock presenter reserves space for its own selection checkbox.
-          This table supplies one checkbox bound to the shared selection model. -->
      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListViewItem">
-      <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
-       HorizontalContentAlignment="Stretch"/>
+      <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" HorizontalContentAlignment="Stretch"/>
      </ControlTemplate></Setter.Value></Setter>
     </Style>
    </ListView.ItemContainerStyle>
@@ -74,6 +71,19 @@
    </ListView.ItemTemplate>
   </ListView>
   <ScrollViewer x:Name="LogPanel" Grid.Row="3" Visibility="Collapsed"><TextBlock Text="{Binding Log}" IsTextSelectionEnabled="True" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
-  <TextBlock Grid.Row="4" Text="{Binding SelectionSummary}"/>
+  <Grid Grid.Row="4" ColumnSpacing="10" Padding="0,8,0,0">
+   <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <TextBlock Text="{Binding SelectionSummary}" VerticalAlignment="Center"/>
+   <ComboBox Grid.Column="1" x:Name="RepairMethodPicker" SelectedIndex="0" SelectionChanged="RepairMethodChanged" MinWidth="235" AutomationProperties.Name="Repair method">
+    <ComboBoxItem Content="Set Taken At from filename" Tag="taken:filename"/>
+    <ComboBoxItem Content="Set Taken At from Created" Tag="taken:created"/>
+    <ComboBoxItem Content="Set Created from Taken At" Tag="created:taken"/>
+    <ComboBoxItem Content="Set Created from filename" Tag="created:filename"/>
+    <ComboBoxItem Content="Set Modified from Taken At" Tag="modified:taken"/>
+    <ComboBoxItem Content="Set Modified from filename" Tag="modified:filename"/>
+   </ComboBox>
+   <ToggleSwitch Grid.Column="2" x:Name="BackupToggle" IsOn="True" OnContent="Backups on" OffContent="Backups OFF" Toggled="BackupToggled" AutomationProperties.Name="Create backups"/>
+   <Button Grid.Column="3" Content="Review changes…" Click="ReviewChanges" IsEnabled="{Binding CanReviewChanges}"/>
+  </Grid>
  </Grid>
 </Window>

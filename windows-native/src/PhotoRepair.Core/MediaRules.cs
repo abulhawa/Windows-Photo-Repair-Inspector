@@ -2,7 +2,10 @@ using System.Globalization;
 
 namespace PhotoRepair.Core;
 
-public sealed record RepairMethod(string Label, string Target, string Source);
+public sealed record RepairMethod(string Label, string Target, string Source)
+{
+    public string Id => $"{Target}:{Source}";
+}
 
 public static class MediaRules
 {
@@ -12,7 +15,6 @@ public static class MediaRules
     public static IReadOnlyList<string> VideoExtensions { get; } = Array.AsReadOnly(new[] { ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".webm" });
     public static IReadOnlyList<string> WritableTakenExtensions { get; } = Array.AsReadOnly(new[] { ".jpg", ".jpeg" });
     public static IReadOnlyList<string> ReviewFilters { get; } = Array.AsReadOnly(new[] { "Missing Taken At", "Taken > Created", "Taken > Modified" });
-    // Definitions only. No execution or file-writing API exists in M1/M2.
     public static IReadOnlyList<RepairMethod> RepairMethods { get; } = Array.AsReadOnly(new[] {
         new RepairMethod("Set Taken At from filename", "taken", "filename"),
         new RepairMethod("Set Taken At from Created", "taken", "created"),
